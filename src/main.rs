@@ -72,6 +72,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         log.timestamp_num = parse_timestamp_to_f64(&log.timestamp);
     }
 
+    for log in &logs {
+        println!("{} => {}", log.timestamp, log.timestamp_num);
+    }
+
     let app = MyApp { logs };
 
     let native_options = eframe::NativeOptions::default();
