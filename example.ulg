@@ -1,37 +1,51 @@
 [
   {
     "timestamp": "2025-03-01T17:53:28.480Z",
-    "event": "$TALLY=ON",
+    "type": "ONOFF",
+    "name": "TALLY",
+    "value": "ON",
     "comment": "Job start"
   },
   {
     "timestamp": "2025-03-01T17:53:32.000Z",
-    "event": "$CHG=PULSE(400)",
+    "type": "PULSE",
+    "name": "CHG",
+    "value": 400,
     "comment": "1st Screen"
   },
   {
     "timestamp": "2025-03-01T17:53:33.000Z",
-    "event": "$DISP=DISP(\"START\")",
+    "type": "ARROW",
+    "name": "DISP",
+    "value": "START",
     "comment": ""
   },
   {
     "timestamp": "2025-03-01T17:53:42.380Z",
-    "event": "$SKIP=PULSE(400)",
+    "type": "PULSE",
+    "name": "SKIP",
+    "value": 400,
     "comment": "Skip next"
   },
   {
     "timestamp": "2025-03-01T17:53:43.000Z",
-    "event": "$DISP=DISP(\"NEXT\")",
+    "type": "ARROW",
+    "name": "DISP",
+    "value": "NEXT",
     "comment": ""
   },
   {
     "timestamp": "2025-03-01T17:53:43.000Z",
-    "event": "$SKIP=PULSE(400)",
+    "type": "PULSE",
+    "name": "END",
+    "value": 400,
     "comment": "Job end"
   },
   {
     "timestamp": "2025-03-01T17:53:57.480Z",
-    "event": "$TALLY=OFF",
+    "type": "ONOFF",
+    "name": "TALLY",
+    "value": "OFF",
     "comment": ""
   }
 ]
