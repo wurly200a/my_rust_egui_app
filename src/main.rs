@@ -1,11 +1,13 @@
-use chrono::NaiveDateTime;
+use chrono::{Duration, NaiveDateTime};
 use eframe;
 use egui;
-use egui::plot::{Line, Plot, PlotPoints, PlotUi};
+use egui::plot::{Legend, Line, Plot, PlotPoints, PlotUi};
+use egui::Color32;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
+use std::ops::RangeInclusive;
 
 /// A single log entry from the .ulg (JSON).
 #[derive(Debug, Deserialize, Serialize)]
@@ -28,7 +30,6 @@ struct Interval {
 }
 
 /// Holds ON intervals for one signal.
-/// (We will generate a single step line from these intervals.)
 struct SignalData {
     name: String,
     y_offset: f64, // Baseline (OFF) position
@@ -50,7 +51,7 @@ impl eframe::App for MyApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("My Rust EGUI App - Single-Step ON/OFF Waveform");
 
-            // Show logs
+            // Show logs (簡易表示)
             egui::ScrollArea::vertical()
                 .max_height(150.0)
                 .show(ui, |ui| {
@@ -69,12 +70,27 @@ impl eframe::App for MyApp {
             ui.separator();
             ui.label("Timeline (Digital Waveform)");
 
-            // y-axis label mapping
+            // y-axis label mapping (クローンして move)
             let offset_to_name = self.offset_to_name.clone();
+
+            // X軸を日時表記にするためのフォーマッタ
+            // timestamp_num (f64秒) を NaiveDateTime に変換し、時刻文字列を生成
+            let x_axis_formatter = |x: f64, _range: &RangeInclusive<f64>| {
+                // from_timestamp_opt ではなく from_timestamp を使用
+                // 0秒 + x秒 での日時を作成（1970-01-01 00:00:00 + x秒）
+                let dt = NaiveDateTime::from_timestamp(0, 0)
+                    + Duration::milliseconds((x * 1000.0) as i64);
+                dt.format("%H:%M:%S%.3f").to_string()
+            };
+
+            // プロット全体の設定
             Plot::new("digital_wave_plot")
                 .height(300.0)
                 .include_x(self.min_time)
                 .include_x(self.max_time)
+                // X軸を日時表示
+                .x_axis_formatter(x_axis_formatter)
+                // Y軸を信号名表示
                 .y_axis_formatter(move |y, _range| {
                     let y_int = y.round() as i32;
                     offset_to_name
@@ -82,16 +98,36 @@ impl eframe::App for MyApp {
                         .cloned()
                         .unwrap_or_else(|| "".to_string())
                 })
+                // 凡例を表示
+                .legend(Legend::default())
                 .show(ui, |plot_ui: &mut PlotUi| {
-                    for signal_data in self.signals.values() {
-                        // Draw a single "digital wave" line
+                    // シグナルごとに色を変えるためのカラーパレット
+                    let color_palette = [
+                        Color32::RED,
+                        Color32::GREEN,
+                        Color32::BLUE,
+                        Color32::YELLOW,
+                        Color32::LIGHT_BLUE,
+                        Color32::LIGHT_GREEN,
+                        Color32::WHITE,
+                        Color32::GOLD,
+                    ];
+
+                    // signals.values() を enumerate してインデックスを取得
+                    for (i, signal_data) in self.signals.values().enumerate() {
+                        // デジタル波形を作成
                         let wave_line = build_digital_wave(
                             &signal_data.on_intervals,
                             self.min_time,
                             self.max_time,
                             signal_data.y_offset,
                         );
-                        plot_ui.line(wave_line);
+
+                        // カラーを決定（パレットをローテーション）
+                        let color = color_palette[i % color_palette.len()];
+
+                        // Line に色・凡例用の名前などを付与して描画
+                        plot_ui.line(wave_line.color(color).width(2.0).name(&signal_data.name));
                     }
                 });
         });
@@ -100,10 +136,6 @@ impl eframe::App for MyApp {
 
 /// Build a single "digital wave" line from on_intervals.
 /// OFF = y_offset, ON = y_offset + 1
-/// We'll create a step-like shape:
-///   - start at (min_t, offset)
-///   - for each ON interval, step up at start, step down at end
-///   - end at (max_t, offset)
 fn build_digital_wave(on_intervals: &Vec<Interval>, min_t: f64, max_t: f64, offset: f64) -> Line {
     let mut points = Vec::new();
     let mut current_x = min_t;
@@ -131,11 +163,9 @@ fn build_digital_wave(on_intervals: &Vec<Interval>, min_t: f64, max_t: f64, offs
     }
 
     Line::new(PlotPoints::from(points))
-        .width(2.0)
-        .name("Digital Wave")
 }
 
-/// Parse timestamp string to f64
+/// Parse timestamp string (ISO8601) to f64 (Unix epoch in seconds)
 fn parse_timestamp_to_f64(ts: &str) -> f64 {
     let replaced = ts.replace('T', " ").replace('Z', "");
     if let Ok(ndt) = NaiveDateTime::parse_from_str(&replaced, "%Y-%m-%d %H:%M:%S%.3f") {
@@ -206,7 +236,6 @@ fn merge_on_intervals(sig: &mut SignalData) {
     sig.on_intervals
         .sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
 
-    // 明示的に型を指定する
     let mut merged: Vec<Interval> = Vec::new();
 
     for iv in &sig.on_intervals {
@@ -236,6 +265,7 @@ fn merge_on_intervals(sig: &mut SignalData) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // JSONファイルを読み込む
     let path = "example.ulg";
     let data = fs::read_to_string(path)?;
     let mut logs: Vec<LogEntry> = serde_json::from_str(&data)?;
@@ -250,6 +280,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let max_time = logs.last().map(|x| x.timestamp_num).unwrap_or(10.0);
 
     // Collect unique signal names
+    use std::collections::BTreeSet;
     let mut unique_names = BTreeSet::new();
     for log in &logs {
         unique_names.insert(log.name.clone());
@@ -271,7 +302,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         offset_to_name.insert(i, name);
         i += 2;
-        // i を +2 すると、OFFが y_offset, ON が y_offset+1 で重ならない（見やすくなる）
     }
 
     // Update intervals
