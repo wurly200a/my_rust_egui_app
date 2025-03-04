@@ -1,4 +1,4 @@
-use chrono::{Duration, NaiveDateTime};
+use chrono::{Duration, NaiveDateTime, TimeZone, Utc};
 use eframe;
 use egui;
 use egui::plot::{Legend, Line, Plot, PlotPoints, PlotUi};
@@ -51,7 +51,7 @@ impl eframe::App for MyApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("My Rust EGUI App - Single-Step ON/OFF Waveform");
 
-            // Show logs (簡易表示)
+            // 簡易ログ表示
             egui::ScrollArea::vertical()
                 .max_height(150.0)
                 .show(ui, |ui| {
@@ -70,27 +70,23 @@ impl eframe::App for MyApp {
             ui.separator();
             ui.label("Timeline (Digital Waveform)");
 
-            // y-axis label mapping (クローンして move)
+            // Y軸ラベル用（シグナル名）をクローンしてmove
             let offset_to_name = self.offset_to_name.clone();
 
-            // X軸を日時表記にするためのフォーマッタ
-            // timestamp_num (f64秒) を NaiveDateTime に変換し、時刻文字列を生成
+            // X軸日時フォーマッタ
             let x_axis_formatter = |x: f64, _range: &RangeInclusive<f64>| {
-                // from_timestamp_opt ではなく from_timestamp を使用
-                // 0秒 + x秒 での日時を作成（1970-01-01 00:00:00 + x秒）
-                let dt = NaiveDateTime::from_timestamp(0, 0)
-                    + Duration::milliseconds((x * 1000.0) as i64);
+                // Utc.timestamp(0, 0) を使って 1970-01-01 00:00:00 UTC を基点とする
+                let dt =
+                    Utc.timestamp(0, 0).naive_utc() + Duration::milliseconds((x * 1000.0) as i64);
                 dt.format("%H:%M:%S%.3f").to_string()
             };
 
-            // プロット全体の設定
+            // Plotウィジェットのサイズをウィンドウ全体に広げるため、min_sizeを利用
             Plot::new("digital_wave_plot")
-                .height(300.0)
+                .min_size(ui.available_size())
                 .include_x(self.min_time)
                 .include_x(self.max_time)
-                // X軸を日時表示
                 .x_axis_formatter(x_axis_formatter)
-                // Y軸を信号名表示
                 .y_axis_formatter(move |y, _range| {
                     let y_int = y.round() as i32;
                     offset_to_name
@@ -98,10 +94,9 @@ impl eframe::App for MyApp {
                         .cloned()
                         .unwrap_or_else(|| "".to_string())
                 })
-                // 凡例を表示
                 .legend(Legend::default())
                 .show(ui, |plot_ui: &mut PlotUi| {
-                    // シグナルごとに色を変えるためのカラーパレット
+                    // カラーパレットによるシグナルごとの色分け
                     let color_palette = [
                         Color32::RED,
                         Color32::GREEN,
@@ -113,9 +108,7 @@ impl eframe::App for MyApp {
                         Color32::GOLD,
                     ];
 
-                    // signals.values() を enumerate してインデックスを取得
                     for (i, signal_data) in self.signals.values().enumerate() {
-                        // デジタル波形を作成
                         let wave_line = build_digital_wave(
                             &signal_data.on_intervals,
                             self.min_time,
@@ -123,10 +116,8 @@ impl eframe::App for MyApp {
                             signal_data.y_offset,
                         );
 
-                        // カラーを決定（パレットをローテーション）
                         let color = color_palette[i % color_palette.len()];
 
-                        // Line に色・凡例用の名前などを付与して描画
                         plot_ui.line(wave_line.color(color).width(2.0).name(&signal_data.name));
                     }
                 });
@@ -140,24 +131,19 @@ fn build_digital_wave(on_intervals: &Vec<Interval>, min_t: f64, max_t: f64, offs
     let mut points = Vec::new();
     let mut current_x = min_t;
 
-    // Start OFF
+    // 開始はOFF状態
     points.push([current_x, offset]);
 
     for iv in on_intervals {
-        // Move baseline to interval.start (if there's a gap)
         if iv.start > current_x {
             points.push([iv.start, offset]);
         }
-        // Step up
-        points.push([iv.start, offset + 1.0]);
-        // Stay ON until iv.end
-        points.push([iv.end, offset + 1.0]);
-        // Step down
-        points.push([iv.end, offset]);
+        points.push([iv.start, offset + 1.0]); // Step up
+        points.push([iv.end, offset + 1.0]); // ON状態維持
+        points.push([iv.end, offset]); // Step down
         current_x = iv.end;
     }
 
-    // After last ON interval, remain OFF until max_t
     if current_x < max_t {
         points.push([max_t, offset]);
     }
@@ -177,14 +163,13 @@ fn parse_timestamp_to_f64(ts: &str) -> f64 {
     }
 }
 
-/// Update ON intervals from the log (focusing on ONOFF/PULSE/ARROW etc.)
+/// Update ON intervals from the log (for ONOFF/PULSE/ARROW etc.)
 fn update_signal_data(signals: &mut HashMap<String, SignalData>, log: &LogEntry) {
     let signal_name = &log.name;
     let time = log.timestamp_num;
 
     match log.kind.as_str() {
         "ONOFF" => {
-            // value = "ON" or "OFF"
             if let Some(val) = log.value.as_str() {
                 if val == "ON" {
                     if let Some(sig) = signals.get_mut(signal_name) {
@@ -200,7 +185,6 @@ fn update_signal_data(signals: &mut HashMap<String, SignalData>, log: &LogEntry)
             }
         }
         "PULSE" => {
-            // value = number (milliseconds)
             if let Some(ms) = log.value.as_f64() {
                 if let Some(sig) = signals.get_mut(signal_name) {
                     sig.on_intervals.push(Interval {
@@ -211,7 +195,6 @@ fn update_signal_data(signals: &mut HashMap<String, SignalData>, log: &LogEntry)
             }
         }
         "ARROW" => {
-            // treat as short ON (0.2s)
             if let Some(sig) = signals.get_mut(signal_name) {
                 sig.on_intervals.push(Interval {
                     start: time,
@@ -220,7 +203,6 @@ fn update_signal_data(signals: &mut HashMap<String, SignalData>, log: &LogEntry)
             }
         }
         _ => {
-            // default short pulse
             if let Some(sig) = signals.get_mut(signal_name) {
                 sig.on_intervals.push(Interval {
                     start: time,
@@ -232,45 +214,37 @@ fn update_signal_data(signals: &mut HashMap<String, SignalData>, log: &LogEntry)
 }
 
 fn merge_on_intervals(sig: &mut SignalData) {
-    // Sort intervals by their start time
     sig.on_intervals
         .sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
-
     let mut merged: Vec<Interval> = Vec::new();
 
     for iv in &sig.on_intervals {
         if let Some(last_iv) = merged.last_mut() {
-            // Overlap check
             if iv.start <= last_iv.end {
                 if iv.end > last_iv.end {
                     last_iv.end = iv.end;
                 }
             } else {
-                // no overlap => push new interval
                 merged.push(Interval {
                     start: iv.start,
                     end: iv.end,
                 });
             }
         } else {
-            // merged が空なら最初の要素として追加
             merged.push(Interval {
                 start: iv.start,
                 end: iv.end,
             });
         }
     }
-
     sig.on_intervals = merged;
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // JSONファイルを読み込む
     let path = "example.ulg";
     let data = fs::read_to_string(path)?;
     let mut logs: Vec<LogEntry> = serde_json::from_str(&data)?;
 
-    // Convert timestamps
     for log in &mut logs {
         log.timestamp_num = parse_timestamp_to_f64(&log.timestamp);
     }
@@ -279,14 +253,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let min_time = logs.first().map(|x| x.timestamp_num).unwrap_or(0.0);
     let max_time = logs.last().map(|x| x.timestamp_num).unwrap_or(10.0);
 
-    // Collect unique signal names
-    use std::collections::BTreeSet;
     let mut unique_names = BTreeSet::new();
     for log in &logs {
         unique_names.insert(log.name.clone());
     }
 
-    // Assign each signal a different y_offset
     let mut signals = HashMap::new();
     let mut offset_to_name = HashMap::new();
     let mut i = 1;
@@ -295,7 +266,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             name.clone(),
             SignalData {
                 name: name.clone(),
-                y_offset: i as f64, // OFF時の高さ
+                y_offset: i as f64,
                 on_intervals: vec![],
                 is_on: None,
             },
@@ -304,17 +275,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         i += 2;
     }
 
-    // Update intervals
     for log in &logs {
         update_signal_data(&mut signals, log);
     }
 
-    // Merge overlapping intervals
     for sig in signals.values_mut() {
         merge_on_intervals(sig);
     }
 
-    // Build the app
     let app = MyApp {
         logs,
         signals,
