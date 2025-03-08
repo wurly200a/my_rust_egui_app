@@ -258,21 +258,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         unique_names.insert(log.name.clone());
     }
 
+    // BTreeSet はソート済みなので、Vec に変換して元々の昇順順序を保持
+    let mut unique_names: Vec<String> = unique_names.into_iter().collect();
+    let n = unique_names.len();
     let mut signals = HashMap::new();
     let mut offset_to_name = HashMap::new();
-    let mut i = 1;
-    for name in unique_names {
+    // 先頭のシグナルに一番大きな y_offset を割り当てることで、上から下に逆順で表示されるようにする
+    for (i, name) in unique_names.iter().enumerate() {
+        let y_offset = ((n - i) * 2 - 1) as f64;
         signals.insert(
             name.clone(),
             SignalData {
                 name: name.clone(),
-                y_offset: i as f64,
+                y_offset,
                 on_intervals: vec![],
                 is_on: None,
             },
         );
-        offset_to_name.insert(i, name);
-        i += 2;
+        offset_to_name.insert(y_offset as i32, name.clone());
     }
 
     for log in &logs {
