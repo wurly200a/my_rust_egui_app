@@ -2,6 +2,7 @@
   {
     "timestamp": "2025-03-01T17:53:28.480Z",
     "type": "ONOFF",
+    "group": "group1",
     "name": "TALLY",
     "value": "ON",
     "comment": "Job start"
@@ -9,6 +10,7 @@
   {
     "timestamp": "2025-03-01T17:53:32.000Z",
     "type": "PULSE",
+    "group": "group1",
     "name": "CHG",
     "value": 400,
     "comment": "1st Screen"
@@ -16,6 +18,7 @@
   {
     "timestamp": "2025-03-01T17:53:33.000Z",
     "type": "ARROW",
+    "group": "group2",
     "name": "DISP",
     "value": "START",
     "comment": ""
@@ -23,6 +26,7 @@
   {
     "timestamp": "2025-03-01T17:53:42.380Z",
     "type": "PULSE",
+    "group": "group1",
     "name": "SKIP",
     "value": 400,
     "comment": "Skip next"
@@ -30,6 +34,7 @@
   {
     "timestamp": "2025-03-01T17:53:43.000Z",
     "type": "ARROW",
+    "group": "group2",
     "name": "DISP",
     "value": "NEXT",
     "comment": ""
@@ -37,6 +42,7 @@
   {
     "timestamp": "2025-03-01T17:53:43.000Z",
     "type": "PULSE",
+    "group": "group1",
     "name": "END",
     "value": 400,
     "comment": "Job end"
@@ -44,6 +50,7 @@
   {
     "timestamp": "2025-03-01T17:53:57.480Z",
     "type": "ONOFF",
+    "group": "group1",
     "name": "TALLY",
     "value": "OFF",
     "comment": ""
