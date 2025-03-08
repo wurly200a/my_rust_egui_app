@@ -189,7 +189,7 @@ fn update_signal_data(signals: &mut HashMap<String, SignalData>, log: &LogEntry)
                 if let Some(sig) = signals.get_mut(signal_name) {
                     sig.on_intervals.push(Interval {
                         start: time,
-                        end: time + ms / 1000.0,
+                        end: time + 0.001,
                     });
                 }
             }
