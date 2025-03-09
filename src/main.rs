@@ -1,10 +1,9 @@
-// main.rs
-
 use chrono::{Duration, NaiveDateTime, TimeZone, Utc};
 use eframe;
 use egui;
-use egui::plot::{Legend, Line, Plot, PlotPoints, PlotUi};
+// egui_plot 0.24 を利用
 use egui::Color32;
+use egui_plot::{Legend, Line, Plot, PlotPoints, PlotUi};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
@@ -18,7 +17,7 @@ struct LogEntry {
     #[serde(rename = "type")]
     kind: String,
     name: String,
-    // Add a group field for grouping
+    // グループ化用フィールド
     #[serde(default)]
     group: Option<String>,
     value: Value,
@@ -39,14 +38,15 @@ struct SignalData {
     name: String,
     y_offset: f64, // Baseline (OFF) position
     on_intervals: Vec<Interval>,
-    is_on: Option<f64>, // For ONOFF: track start time
-    visible: bool,      // Whether this signal is visible
+    is_on: Option<f64>, // ONOFF の場合、ON開始時刻を記録
+    visible: bool,      // 信号の表示/非表示
+    color: Color32,     // 固定の色
 }
 
 /// Holds a group of signals.
 struct GroupData {
     name: String,
-    signals: Vec<String>, // signal names
+    signals: Vec<String>, // 信号名リスト
 }
 
 /// Main application
@@ -56,37 +56,34 @@ struct MyApp {
     offset_to_name: HashMap<i32, String>,
     min_time: f64,
     max_time: f64,
-
-    // Group management
     groups: HashMap<String, GroupData>,
 }
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Left side panel for group/signal checkboxes
+        // 左側パネル：グループ／信号のチェックボックス
         egui::SidePanel::left("group_panel")
             .resizable(true)
             .show(ctx, |ui| {
                 ui.heading("Groups");
 
-                // Show each group with a checkbox and indent for signals
-                for group in self.groups.values_mut() {
-                    // Count how many signals are visible vs. total
+                let mut group_keys: Vec<String> = self.groups.keys().cloned().collect();
+                group_keys.sort();
+
+                for group_key in group_keys {
+                    let group = self.groups.get_mut(&group_key).unwrap();
+
+                    // 表示中の信号数をカウント
                     let visible_count = group
                         .signals
                         .iter()
                         .filter(|s| self.signals[*s].visible)
                         .count();
 
-                    // If at least one signal is visible => group checkbox is "checked"
                     let mut group_check = visible_count > 0;
-
-                    // Show the group checkbox
                     let group_response = ui.checkbox(&mut group_check, &group.name);
 
-                    // If group checkbox was toggled
                     if group_response.changed() {
-                        // Turn all signals in this group on/off
                         for s in &group.signals {
                             if let Some(sig) = self.signals.get_mut(s) {
                                 sig.visible = group_check;
@@ -94,7 +91,6 @@ impl eframe::App for MyApp {
                         }
                     }
 
-                    // Show signals in an indented area
                     ui.indent(format!("group_indent_{}", group.name), |ui| {
                         for s in &group.signals {
                             if let Some(sig) = self.signals.get_mut(s) {
@@ -105,16 +101,14 @@ impl eframe::App for MyApp {
                             }
                         }
                     });
-
                     ui.separator();
                 }
             });
 
-        // Central panel for waveform plot and log display
+        // 中央パネル：波形描画とログ表示
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("My Rust EGUI App - Single-Step ON/OFF Waveform");
 
-            // Simple log display
             egui::ScrollArea::vertical()
                 .max_height(150.0)
                 .show(ui, |ui| {
@@ -133,85 +127,87 @@ impl eframe::App for MyApp {
             ui.separator();
             ui.label("Timeline (Digital Waveform)");
 
-            // Clone for move in plot
-            let offset_to_name = self.offset_to_name.clone();
-
-            // X-axis date-time formatter
-            let x_axis_formatter = |x: f64, _range: &RangeInclusive<f64>| {
-                // Use Unix epoch as base
-                let dt =
-                    Utc.timestamp(0, 0).naive_utc() + Duration::milliseconds((x * 1000.0) as i64);
-                dt.format("%H:%M:%S%.3f").to_string()
+            // x軸フォーマッター：引数は (value, index, range)
+            let x_axis_formatter = |x: f64, _index: usize, _range: &RangeInclusive<f64>| {
+                let base_dt = Utc.timestamp_opt(0, 0).unwrap();
+                let dt = base_dt + Duration::milliseconds((x * 1000.0) as i64);
+                dt.naive_utc().format("%H:%M:%S%.3f").to_string()
             };
 
-            // Expand the plot widget
-            Plot::new("digital_wave_plot")
-                .min_size(ui.available_size())
-                .include_x(self.min_time)
-                .include_x(self.max_time)
-                .x_axis_formatter(x_axis_formatter)
-                .y_axis_formatter(move |y, _range| {
+            // y軸フォーマッター：引数は (value, index, range)
+            let y_axis_formatter = {
+                let offset_to_name = self.offset_to_name.clone();
+                move |y: f64, _index: usize, _range: &RangeInclusive<f64>| {
                     let y_int = y.round() as i32;
                     offset_to_name
                         .get(&y_int)
                         .cloned()
                         .unwrap_or_else(|| "".to_string())
-                })
-                .legend(Legend::default())
+                }
+            };
+
+            // Legend は egui_plot::Legend::default() を利用
+            let legend = Legend::default();
+
+            // プロット描画
+            Plot::new("digital_wave_plot")
+                .min_size(ui.available_size())
+                .include_x(self.min_time)
+                .include_x(self.max_time)
+                .x_axis_formatter(x_axis_formatter)
+                .y_axis_formatter(y_axis_formatter)
+                .legend(legend)
                 .show(ui, |plot_ui: &mut PlotUi| {
-                    // Color palette for signals
-                    let color_palette = [
-                        Color32::RED,
-                        Color32::GREEN,
-                        Color32::BLUE,
-                        Color32::YELLOW,
-                        Color32::LIGHT_BLUE,
-                        Color32::LIGHT_GREEN,
-                        Color32::WHITE,
-                        Color32::GOLD,
-                    ];
+                    let mut group_keys: Vec<String> = self.groups.keys().cloned().collect();
+                    group_keys.sort();
 
-                    // Draw waveforms only for visible signals
+                    // 描画順を追跡するための連番
                     let mut draw_index = 0;
-                    for signal_data in self.signals.values() {
-                        if !signal_data.visible {
-                            continue;
+
+                    for group_key in group_keys {
+                        let group = &self.groups[&group_key];
+                        for signal_name in &group.signals {
+                            if let Some(signal_data) = self.signals.get(signal_name) {
+                                if signal_data.visible {
+                                    let wave_line = build_digital_wave(
+                                        &signal_data.on_intervals,
+                                        self.min_time,
+                                        self.max_time,
+                                        signal_data.y_offset,
+                                    );
+                                    // 凡例ラベルに連番プレフィックスを付与して順序を固定
+                                    let legend_label =
+                                        format!("{:02}: {}", draw_index, signal_data.name);
+                                    plot_ui.line(
+                                        wave_line
+                                            .color(signal_data.color)
+                                            .width(2.0)
+                                            .name(legend_label),
+                                    );
+                                    draw_index += 1;
+                                }
+                            }
                         }
-                        let wave_line = build_digital_wave(
-                            &signal_data.on_intervals,
-                            self.min_time,
-                            self.max_time,
-                            signal_data.y_offset,
-                        );
-
-                        let color = color_palette[draw_index % color_palette.len()];
-                        draw_index += 1;
-
-                        plot_ui.line(wave_line.color(color).width(2.0).name(&signal_data.name));
                     }
                 });
         });
     }
 }
 
-/// Build a single "digital wave" line from on_intervals.
+/// 指定の on_intervals からデジタル波形を生成する  
 /// OFF = y_offset, ON = y_offset + 1
 fn build_digital_wave(on_intervals: &Vec<Interval>, min_t: f64, max_t: f64, offset: f64) -> Line {
     let mut points = Vec::new();
     let mut current_x = min_t;
 
-    // Start with OFF
     points.push([current_x, offset]);
 
     for iv in on_intervals {
         if iv.start > current_x {
             points.push([iv.start, offset]);
         }
-        // Step up to ON
         points.push([iv.start, offset + 1.0]);
-        // Keep ON
         points.push([iv.end, offset + 1.0]);
-        // Step down to OFF
         points.push([iv.end, offset]);
         current_x = iv.end;
     }
@@ -223,7 +219,7 @@ fn build_digital_wave(on_intervals: &Vec<Interval>, min_t: f64, max_t: f64, offs
     Line::new(PlotPoints::from(points))
 }
 
-/// Parse timestamp string (ISO8601) to f64 (Unix epoch in seconds)
+/// ISO8601 のタイムスタンプ文字列を f64 (Unix epoch 秒) に変換する
 fn parse_timestamp_to_f64(ts: &str) -> f64 {
     let replaced = ts.replace('T', " ").replace('Z', "");
     if let Ok(ndt) = NaiveDateTime::parse_from_str(&replaced, "%Y-%m-%d %H:%M:%S%.3f") {
@@ -235,7 +231,7 @@ fn parse_timestamp_to_f64(ts: &str) -> f64 {
     }
 }
 
-/// Update ON intervals from the log (for ONOFF/PULSE/ARROW etc.)
+/// ログから各信号の on_intervals を更新する
 fn update_signal_data(signals: &mut HashMap<String, SignalData>, log: &LogEntry) {
     let signal_name = &log.name;
     let time = log.timestamp_num;
@@ -285,7 +281,7 @@ fn update_signal_data(signals: &mut HashMap<String, SignalData>, log: &LogEntry)
     }
 }
 
-/// Merge overlapping intervals
+/// 重なっている interval をマージする
 fn merge_on_intervals(sig: &mut SignalData) {
     sig.on_intervals
         .sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
@@ -318,7 +314,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data = fs::read_to_string(path)?;
     let mut logs: Vec<LogEntry> = serde_json::from_str(&data)?;
 
-    // Convert timestamp to numeric
     for log in &mut logs {
         log.timestamp_num = parse_timestamp_to_f64(&log.timestamp);
     }
@@ -327,43 +322,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let min_time = logs.first().map(|x| x.timestamp_num).unwrap_or(0.0);
     let max_time = logs.last().map(|x| x.timestamp_num).unwrap_or(10.0);
 
-    // Collect unique signal names
     let mut unique_names = BTreeSet::new();
     for log in &logs {
         unique_names.insert(log.name.clone());
     }
+    let unique_names: Vec<String> = unique_names.into_iter().collect();
 
     let mut signals = HashMap::new();
-    let mut offset_to_name = HashMap::new();
-
-    // Prepare groups
-    let mut groups = HashMap::<String, GroupData>::new();
-
-    // Create signals with offset from top to bottom
-    let mut unique_names: Vec<String> = unique_names.into_iter().collect();
-    let n = unique_names.len();
-    for (i, name) in unique_names.iter().enumerate() {
-        let y_offset = ((n - i) * 2 - 1) as f64;
-
+    for name in &unique_names {
         signals.insert(
             name.clone(),
             SignalData {
                 name: name.clone(),
-                y_offset,
+                y_offset: 0.0,
                 on_intervals: vec![],
                 is_on: None,
-                visible: true, // default to visible
+                visible: true,
+                color: Color32::WHITE,
             },
         );
-        offset_to_name.insert(y_offset as i32, name.clone());
     }
 
-    // For each log entry, record the signal -> group relation
+    let mut groups = HashMap::<String, GroupData>::new();
     let mut signal_to_group = HashMap::new();
     for log in &logs {
         if let Some(grp) = &log.group {
             if !grp.is_empty() {
-                // Create group if not exists
                 if !groups.contains_key(grp) {
                     groups.insert(
                         grp.clone(),
@@ -373,37 +357,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         },
                     );
                 }
-                // Assign this signal to that group (once per signal)
                 if !signal_to_group.contains_key(&log.name) {
                     signal_to_group.insert(log.name.clone(), grp.clone());
                 }
             }
         }
     }
-
-    // Fill group -> signals from signal_to_group
     for (signal_name, group_name) in signal_to_group {
         if let Some(g) = groups.get_mut(&group_name) {
-            // Avoid duplication
             if !g.signals.contains(&signal_name) {
                 g.signals.push(signal_name);
             }
         }
     }
-
-    // Sort the signal names inside each group
     for g in groups.values_mut() {
         g.signals.sort();
     }
 
-    // Update on_intervals based on logs
     for log in &logs {
         update_signal_data(&mut signals, log);
     }
-
-    // Merge intervals for each signal
     for sig in signals.values_mut() {
         merge_on_intervals(sig);
+    }
+
+    let mut group_keys: Vec<String> = groups.keys().cloned().collect();
+    group_keys.sort();
+
+    let mut ordered_signal_names = Vec::new();
+    for gk in &group_keys {
+        let group = &groups[gk];
+        for s in &group.signals {
+            ordered_signal_names.push(s.clone());
+        }
+    }
+
+    let total = ordered_signal_names.len();
+    let color_palette = [
+        Color32::RED,
+        Color32::GREEN,
+        Color32::BLUE,
+        Color32::YELLOW,
+        Color32::LIGHT_BLUE,
+        Color32::LIGHT_GREEN,
+        Color32::WHITE,
+        Color32::GOLD,
+    ];
+
+    let mut offset_to_name = HashMap::new();
+    for (i, name) in ordered_signal_names.into_iter().enumerate() {
+        let y_offset = ((total - i) * 2 - 1) as f64;
+        let color = color_palette[i % color_palette.len()];
+        if let Some(sig) = signals.get_mut(&name) {
+            sig.y_offset = y_offset;
+            sig.color = color;
+        }
+        offset_to_name.insert(y_offset as i32, name.clone());
     }
 
     let app = MyApp {
