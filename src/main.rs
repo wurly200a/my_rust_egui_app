@@ -172,20 +172,24 @@ impl eframe::App for MyApp {
                 .min_size(ui.available_size())
                 .include_x(self.min_time)
                 .include_x(self.max_time)
-                .x_axis_formatter(|grid_mark: egui_plot::GridMark, _index, _range| {
-                    let x = grid_mark.value;
-                    let base_dt = Utc.timestamp_opt(0, 0).unwrap();
-                    let dt = base_dt + Duration::milliseconds((x * 1000.0) as i64);
-                    dt.naive_utc().format("%H:%M:%S%.3f").to_string()
-                })
-                .y_axis_formatter(move |grid_mark: egui_plot::GridMark, _index, _range| {
-                    let y = grid_mark.value;
-                    let y_int = y.round() as i32;
-                    offset_to_name
-                        .get(&y_int)
-                        .cloned()
-                        .unwrap_or_else(|| "".to_string())
-                })
+                .x_axis_formatter(
+                    |grid_mark: egui_plot::GridMark, _range: &RangeInclusive<f64>| {
+                        let x = grid_mark.value;
+                        let base_dt = Utc.timestamp_opt(0, 0).unwrap();
+                        let dt = base_dt + Duration::milliseconds((x * 1000.0) as i64);
+                        dt.naive_utc().format("%H:%M:%S%.3f").to_string()
+                    },
+                )
+                .y_axis_formatter(
+                    move |grid_mark: egui_plot::GridMark, _range: &RangeInclusive<f64>| {
+                        let y = grid_mark.value;
+                        let y_int = y.round() as i32;
+                        offset_to_name
+                            .get(&y_int)
+                            .cloned()
+                            .unwrap_or_else(|| "".to_string())
+                    },
+                )
                 .legend(legend)
                 .show(ui, |plot_ui: &mut PlotUi| {
                     let mut group_keys: Vec<String> = self.groups.keys().cloned().collect();
@@ -455,7 +459,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eframe::run_native(
         "My Rust EGUI App - Single-Step ON/OFF Waveform",
         native_options,
-        Box::new(|_cc| Box::new(app)),
+        Box::new(|_cc| Ok(Box::new(app))),
     )?;
 
     Ok(())
