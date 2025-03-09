@@ -162,35 +162,30 @@ impl eframe::App for MyApp {
             ui.separator();
             ui.label("Timeline (Digital Waveform)");
 
-            // x軸フォーマッター： (value, index, range)
-            let x_axis_formatter = |x: f64, _index: usize, _range: &RangeInclusive<f64>| {
-                let base_dt = Utc.timestamp_opt(0, 0).unwrap();
-                let dt = base_dt + Duration::milliseconds((x * 1000.0) as i64);
-                dt.naive_utc().format("%H:%M:%S%.3f").to_string()
-            };
+            // 凡例
+            let legend = Legend::default();
 
-            // y軸フォーマッター： (value, index, range)
-            let y_axis_formatter = {
-                let offset_to_name = self.offset_to_name.clone();
-                move |y: f64, _index: usize, _range: &RangeInclusive<f64>| {
+            // プロット描画
+            let offset_to_name = self.offset_to_name.clone();
+
+            Plot::new("digital_wave_plot")
+                .min_size(ui.available_size())
+                .include_x(self.min_time)
+                .include_x(self.max_time)
+                .x_axis_formatter(|grid_mark: egui_plot::GridMark, _index, _range| {
+                    let x = grid_mark.value;
+                    let base_dt = Utc.timestamp_opt(0, 0).unwrap();
+                    let dt = base_dt + Duration::milliseconds((x * 1000.0) as i64);
+                    dt.naive_utc().format("%H:%M:%S%.3f").to_string()
+                })
+                .y_axis_formatter(move |grid_mark: egui_plot::GridMark, _index, _range| {
+                    let y = grid_mark.value;
                     let y_int = y.round() as i32;
                     offset_to_name
                         .get(&y_int)
                         .cloned()
                         .unwrap_or_else(|| "".to_string())
-                }
-            };
-
-            // 凡例
-            let legend = Legend::default();
-
-            // プロット描画
-            Plot::new("digital_wave_plot")
-                .min_size(ui.available_size())
-                .include_x(self.min_time)
-                .include_x(self.max_time)
-                .x_axis_formatter(x_axis_formatter)
-                .y_axis_formatter(y_axis_formatter)
+                })
                 .legend(legend)
                 .show(ui, |plot_ui: &mut PlotUi| {
                     let mut group_keys: Vec<String> = self.groups.keys().cloned().collect();
