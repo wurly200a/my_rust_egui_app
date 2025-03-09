@@ -1,7 +1,6 @@
 use chrono::{Duration, NaiveDateTime, TimeZone, Utc};
 use eframe;
 use egui;
-// egui_plot 0.24 を利用
 use egui::Color32;
 use egui_plot::{Legend, Line, Plot, PlotPoints, PlotUi};
 use serde::{Deserialize, Serialize};
@@ -10,7 +9,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::ops::RangeInclusive;
 
-/// A single log entry from the .ulg (JSON).
+/// ログの1エントリ（.ulg の JSON）
 #[derive(Debug, Deserialize, Serialize)]
 struct LogEntry {
     timestamp: String,
@@ -27,29 +26,29 @@ struct LogEntry {
     timestamp_num: f64,
 }
 
-/// Represents an ON interval.
+/// ON区間を表す
 struct Interval {
     start: f64,
     end: f64,
 }
 
-/// Holds ON intervals for one signal.
+/// 1信号のON区間等の情報
 struct SignalData {
     name: String,
-    y_offset: f64, // Baseline (OFF) position
+    y_offset: f64, // OFF時の基準位置
     on_intervals: Vec<Interval>,
     is_on: Option<f64>, // ONOFF の場合、ON開始時刻を記録
-    visible: bool,      // 信号の表示/非表示
+    visible: bool,      // 表示／非表示
     color: Color32,     // 固定の色
 }
 
-/// Holds a group of signals.
+/// 信号グループ
 struct GroupData {
     name: String,
     signals: Vec<String>, // 信号名リスト
 }
 
-/// Main application
+/// メインアプリケーション
 struct MyApp {
     logs: Vec<LogEntry>,
     signals: HashMap<String, SignalData>,
@@ -79,7 +78,6 @@ impl eframe::App for MyApp {
                         .iter()
                         .filter(|s| self.signals[*s].visible)
                         .count();
-
                     let mut group_check = visible_count > 0;
                     let group_response = ui.checkbox(&mut group_check, &group.name);
 
@@ -105,6 +103,43 @@ impl eframe::App for MyApp {
                 }
             });
 
+        // ★★★ 表示中のシグナルだけを抽出し、y_offset と offset_to_name を再計算 ★★★
+        {
+            // グループ順にソートして、可視信号を抽出
+            let mut group_keys: Vec<String> = self.groups.keys().cloned().collect();
+            group_keys.sort();
+
+            let mut visible_signals_in_order = Vec::new();
+            for group_key in group_keys {
+                let group = &self.groups[&group_key];
+                for s in &group.signals {
+                    if let Some(sig) = self.signals.get(s) {
+                        if sig.visible {
+                            visible_signals_in_order.push(s.clone());
+                        }
+                    }
+                }
+            }
+
+            let total_visible = visible_signals_in_order.len();
+            for (i, s) in visible_signals_in_order.iter().enumerate() {
+                // 上から順に配置（例: 上位が高い y 値）
+                let offset = ((total_visible - i) * 2 - 1) as f64;
+                if let Some(sig) = self.signals.get_mut(s) {
+                    sig.y_offset = offset;
+                }
+            }
+
+            // offset_to_name を再構築（可視信号のみ）
+            self.offset_to_name.clear();
+            for (name, sig) in self.signals.iter() {
+                if sig.visible {
+                    self.offset_to_name
+                        .insert(sig.y_offset as i32, name.clone());
+                }
+            }
+        }
+
         // 中央パネル：波形描画とログ表示
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("My Rust EGUI App - Single-Step ON/OFF Waveform");
@@ -127,14 +162,14 @@ impl eframe::App for MyApp {
             ui.separator();
             ui.label("Timeline (Digital Waveform)");
 
-            // x軸フォーマッター：引数は (value, index, range)
+            // x軸フォーマッター： (value, index, range)
             let x_axis_formatter = |x: f64, _index: usize, _range: &RangeInclusive<f64>| {
                 let base_dt = Utc.timestamp_opt(0, 0).unwrap();
                 let dt = base_dt + Duration::milliseconds((x * 1000.0) as i64);
                 dt.naive_utc().format("%H:%M:%S%.3f").to_string()
             };
 
-            // y軸フォーマッター：引数は (value, index, range)
+            // y軸フォーマッター： (value, index, range)
             let y_axis_formatter = {
                 let offset_to_name = self.offset_to_name.clone();
                 move |y: f64, _index: usize, _range: &RangeInclusive<f64>| {
@@ -146,7 +181,7 @@ impl eframe::App for MyApp {
                 }
             };
 
-            // Legend は egui_plot::Legend::default() を利用
+            // 凡例
             let legend = Legend::default();
 
             // プロット描画
@@ -161,9 +196,7 @@ impl eframe::App for MyApp {
                     let mut group_keys: Vec<String> = self.groups.keys().cloned().collect();
                     group_keys.sort();
 
-                    // 描画順を追跡するための連番
                     let mut draw_index = 0;
-
                     for group_key in group_keys {
                         let group = &self.groups[&group_key];
                         for signal_name in &group.signals {
@@ -175,7 +208,6 @@ impl eframe::App for MyApp {
                                         self.max_time,
                                         signal_data.y_offset,
                                     );
-                                    // 凡例ラベルに連番プレフィックスを付与して順序を固定
                                     let legend_label =
                                         format!("{:02}: {}", draw_index, signal_data.name);
                                     plot_ui.line(
