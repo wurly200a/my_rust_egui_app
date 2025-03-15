@@ -18,7 +18,6 @@ struct LogEntry {
     #[serde(rename = "type")]
     kind: String,
     name: String,
-    // グループ化用フィールド
     #[serde(default)]
     group: Option<String>,
     value: Value,
@@ -47,10 +46,10 @@ struct SignalData {
 /// 信号グループ
 struct GroupData {
     name: String,
-    signals: Vec<String>, // 信号名リスト
+    signals: Vec<String>,
 }
 
-/// 変換結果を保持する構造体（Cloneをderiveしてウィンドウ表示時にコピーを使う）
+/// 変換結果を保持する構造体
 #[derive(Clone)]
 struct ConversionResult {
     command: String,
@@ -70,15 +69,38 @@ struct MyApp {
     groups: HashMap<String, GroupData>,
     // 変換結果ウィンドウ表示用の状態
     conversion_result: Option<ConversionResult>,
+
+    // エラーダイアログ用のメッセージ
+    error_dialog_message: Option<String>,
 }
 
 impl MyApp {
+    /// コンストラクタ的に使う初期化
+    fn new() -> Self {
+        Self {
+            logs: Vec::new(),
+            signals: HashMap::new(),
+            offset_to_name: HashMap::new(),
+            min_time: 0.0,
+            max_time: 10.0,
+            groups: HashMap::new(),
+            conversion_result: None,
+            error_dialog_message: None,
+        }
+    }
+
+    /// エラーをユーザーに報知する汎用関数（英語メッセージ）
+    fn show_error_dialog(&mut self, message: &str) {
+        // 標準エラー出力に残しつつ、ダイアログ表示用のフィールドにもセット
+        eprintln!("{}", message);
+        self.error_dialog_message = Some(message.to_owned());
+    }
+
+    /// ログやシグナル、グループ情報の再計算
     fn recalc(&mut self) {
-        // タイムレンジの再計算
         self.min_time = self.logs.first().map(|x| x.timestamp_num).unwrap_or(0.0);
         self.max_time = self.logs.last().map(|x| x.timestamp_num).unwrap_or(10.0);
 
-        // ユニークなシグナル名の抽出と signals の再初期化
         let mut unique_names = BTreeSet::new();
         for log in &self.logs {
             unique_names.insert(log.name.clone());
@@ -99,7 +121,7 @@ impl MyApp {
             );
         }
 
-        // グループの再構築
+        // グループ再構築
         self.groups.clear();
         let mut signal_to_group = HashMap::new();
         for log in &self.logs {
@@ -126,7 +148,7 @@ impl MyApp {
             g.signals.sort();
         }
 
-        // ログデータからシグナルの on_intervals の更新
+        // ログデータからシグナルの on_intervals を更新
         for log in &self.logs {
             update_signal_data(&mut self.signals, log);
         }
@@ -134,7 +156,7 @@ impl MyApp {
             merge_on_intervals(sig);
         }
 
-        // シグナルの表示順（y_offset）と凡例用の offset_to_name の再計算
+        // シグナルの表示順と offset_to_name の再計算
         let mut group_keys: Vec<String> = self.groups.keys().cloned().collect();
         group_keys.sort();
         let mut ordered_signal_names = Vec::new();
@@ -171,7 +193,25 @@ impl MyApp {
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // 変換結果ウィンドウの表示（クローンを利用して borrow エラー回避）
+        //
+        // 1) まず、エラーダイアログがあれば表示
+        //
+        if let Some(msg) = self.error_dialog_message.clone() {
+            egui::Window::new("Error")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(msg);
+                    if ui.button("OK").clicked() {
+                        self.error_dialog_message = None; // ダイアログを閉じる
+                    }
+                });
+        }
+
+        //
+        // 2) 変換結果ウィンドウがあれば表示
+        //
         if let Some(result) = self.conversion_result.clone() {
             egui::Window::new("Conversion Result")
                 .collapsible(false)
@@ -183,7 +223,7 @@ impl eframe::App for MyApp {
 
                     ui.label("Standard Output:");
                     egui::ScrollArea::vertical()
-                        .id_source("conversion_stdout_scroll") // 標準出力用のユニークID
+                        .id_source("conversion_stdout_scroll")
                         .max_height(100.0)
                         .show(ui, |ui| {
                             ui.monospace(&result.stdout);
@@ -192,7 +232,7 @@ impl eframe::App for MyApp {
 
                     ui.label("Error Output:");
                     egui::ScrollArea::vertical()
-                        .id_source("conversion_stderr_scroll") // エラー出力用のユニークID
+                        .id_source("conversion_stderr_scroll")
                         .max_height(100.0)
                         .show(ui, |ui| {
                             ui.monospace(&result.stderr);
@@ -201,37 +241,48 @@ impl eframe::App for MyApp {
 
                     ui.label(format!("Status: {}", if result.ok { "OK" } else { "NG" }));
                     if ui.button("OK").clicked() {
-                        // 変換成功なら生成された JSON ファイルを読み込み
                         if result.ok {
+                            // 変換成功なら JSON ファイルを読み込み
                             if let Some(json_path) = &result.json_file {
-                                if let Ok(data) = fs::read_to_string(json_path) {
-                                    if let Ok(mut logs) =
-                                        serde_json::from_str::<Vec<LogEntry>>(&data)
-                                    {
-                                        for log in &mut logs {
-                                            log.timestamp_num =
-                                                parse_timestamp_to_f64(&log.timestamp);
+                                match fs::read_to_string(json_path) {
+                                    Ok(data) => {
+                                        match serde_json::from_str::<Vec<LogEntry>>(&data) {
+                                            Ok(mut logs) => {
+                                                for log in &mut logs {
+                                                    log.timestamp_num =
+                                                        parse_timestamp_to_f64(&log.timestamp);
+                                                }
+                                                logs.sort_by(|a, b| {
+                                                    a.timestamp_num
+                                                        .partial_cmp(&b.timestamp_num)
+                                                        .unwrap()
+                                                });
+                                                self.logs = logs;
+                                                self.recalc();
+                                            }
+                                            Err(_) => {
+                                                // 英語メッセージ
+                                                self.show_error_dialog(
+                                                    "Failed to parse JSON data.",
+                                                );
+                                            }
                                         }
-                                        logs.sort_by(|a, b| {
-                                            a.timestamp_num.partial_cmp(&b.timestamp_num).unwrap()
-                                        });
-                                        self.logs = logs;
-                                        self.recalc();
-                                    } else {
-                                        eprintln!("JSON のパースに失敗しました");
                                     }
-                                } else {
-                                    eprintln!("ファイル読み込みエラー: {}", json_path);
+                                    Err(e) => {
+                                        // 英語メッセージ
+                                        self.show_error_dialog(&format!("File read error: {}", e));
+                                    }
                                 }
                             }
                         }
-                        // ウィンドウを閉じる
                         self.conversion_result = None;
                     }
                 });
         }
 
-        // メニューバー
+        //
+        // 3) メニューバー
+        //
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
@@ -242,44 +293,52 @@ impl eframe::App for MyApp {
                             if path_str.to_lowercase().ends_with(".json") {
                                 match fs::read_to_string(&path_str) {
                                     Ok(data) => {
-                                        if let Ok(mut logs) =
-                                            serde_json::from_str::<Vec<LogEntry>>(&data)
-                                        {
-                                            for log in &mut logs {
-                                                log.timestamp_num =
-                                                    parse_timestamp_to_f64(&log.timestamp);
+                                        match serde_json::from_str::<Vec<LogEntry>>(&data) {
+                                            Ok(mut logs) => {
+                                                for log in &mut logs {
+                                                    log.timestamp_num =
+                                                        parse_timestamp_to_f64(&log.timestamp);
+                                                }
+                                                logs.sort_by(|a, b| {
+                                                    a.timestamp_num
+                                                        .partial_cmp(&b.timestamp_num)
+                                                        .unwrap()
+                                                });
+                                                self.logs = logs;
+                                                self.recalc();
                                             }
-                                            logs.sort_by(|a, b| {
-                                                a.timestamp_num
-                                                    .partial_cmp(&b.timestamp_num)
-                                                    .unwrap()
-                                            });
-                                            self.logs = logs;
-                                            self.recalc();
-                                        } else {
-                                            eprintln!("JSON のパースに失敗しました");
+                                            Err(_) => {
+                                                // 英語メッセージ
+                                                self.show_error_dialog(
+                                                    "Failed to parse JSON data.",
+                                                );
+                                            }
                                         }
                                     }
-                                    Err(e) => eprintln!("ファイル読み込みエラー: {}", e),
+                                    Err(e) => {
+                                        // 英語メッセージ
+                                        self.show_error_dialog(&format!("File read error: {}", e));
+                                    }
                                 }
                             } else {
-                                eprintln!("Open では .json ファイルのみをサポートしています");
+                                // 英語メッセージ
+                                self.show_error_dialog("Open only supports .json files.");
                             }
                         }
                     }
+
                     if ui.button("Import").clicked() {
                         ui.close_menu();
                         if let Some(path) = FileDialog::new().pick_file() {
                             let path_str = path.to_string_lossy().to_string();
                             if !path_str.to_lowercase().ends_with(".json") {
-                                // 変換コマンドの生成
                                 let command_str =
                                     format!("python3 scripts/convert.py {}", path_str);
-                                // 変換スクリプトの実行
                                 let output = Command::new("python3")
                                     .arg("scripts/convert.py")
                                     .arg(&path_str)
                                     .output();
+
                                 let (stdout, stderr, ok, json_file) = match output {
                                     Ok(o) => {
                                         let ok = o.status.success();
@@ -297,14 +356,18 @@ impl eframe::App for MyApp {
                                         };
                                         (stdout, stderr, ok, json_file)
                                     }
-                                    Err(e) => (
-                                        "".to_string(),
-                                        format!("Failed to execute: {}", e),
-                                        false,
-                                        None,
-                                    ),
+                                    Err(e) => {
+                                        // 英語メッセージ
+                                        self.show_error_dialog(&format!(
+                                            "Failed to execute the conversion script: {}",
+                                            e
+                                        ));
+                                        // 失敗時は適当な値を返しておく
+                                        ("".to_string(), "".to_string(), false, None)
+                                    }
                                 };
-                                // 変換結果を状態に保持し、モーダルウィンドウで表示
+
+                                // 変換結果を状態に保持
                                 self.conversion_result = Some(ConversionResult {
                                     command: command_str,
                                     stdout,
@@ -313,25 +376,35 @@ impl eframe::App for MyApp {
                                     json_file,
                                 });
                             } else {
-                                // すでに .json ファイルの場合は Open の処理と同様に読み込み
-                                if let Ok(data) = fs::read_to_string(&path_str) {
-                                    if let Ok(mut logs) =
-                                        serde_json::from_str::<Vec<LogEntry>>(&data)
-                                    {
-                                        for log in &mut logs {
-                                            log.timestamp_num =
-                                                parse_timestamp_to_f64(&log.timestamp);
+                                // .json の場合はそのまま開く
+                                match fs::read_to_string(&path_str) {
+                                    Ok(data) => {
+                                        match serde_json::from_str::<Vec<LogEntry>>(&data) {
+                                            Ok(mut logs) => {
+                                                for log in &mut logs {
+                                                    log.timestamp_num =
+                                                        parse_timestamp_to_f64(&log.timestamp);
+                                                }
+                                                logs.sort_by(|a, b| {
+                                                    a.timestamp_num
+                                                        .partial_cmp(&b.timestamp_num)
+                                                        .unwrap()
+                                                });
+                                                self.logs = logs;
+                                                self.recalc();
+                                            }
+                                            Err(_) => {
+                                                // 英語メッセージ
+                                                self.show_error_dialog(
+                                                    "Failed to parse JSON data.",
+                                                );
+                                            }
                                         }
-                                        logs.sort_by(|a, b| {
-                                            a.timestamp_num.partial_cmp(&b.timestamp_num).unwrap()
-                                        });
-                                        self.logs = logs;
-                                        self.recalc();
-                                    } else {
-                                        eprintln!("JSON のパースに失敗しました");
                                     }
-                                } else {
-                                    eprintln!("ファイル読み込みエラー: {}", path_str);
+                                    Err(e) => {
+                                        // 英語メッセージ
+                                        self.show_error_dialog(&format!("File read error: {}", e));
+                                    }
                                 }
                             }
                         }
@@ -344,7 +417,9 @@ impl eframe::App for MyApp {
             });
         });
 
-        // 左側パネル：グループ／信号のチェックボックス
+        //
+        // 4) 左側パネル：グループ／信号チェックボックス
+        //
         egui::SidePanel::left("group_panel")
             .resizable(true)
             .show(ctx, |ui| {
@@ -355,8 +430,6 @@ impl eframe::App for MyApp {
 
                 for group_key in group_keys {
                     let group = self.groups.get_mut(&group_key).unwrap();
-
-                    // 表示中の信号数をカウント
                     let visible_count = group
                         .signals
                         .iter()
@@ -387,7 +460,9 @@ impl eframe::App for MyApp {
                 }
             });
 
-        // 可視信号のみの表示順（y_offset）と offset_to_name の再計算
+        //
+        // 5) 可視信号のみの offset 再計算
+        //
         {
             let mut group_keys: Vec<String> = self.groups.keys().cloned().collect();
             group_keys.sort();
@@ -421,7 +496,9 @@ impl eframe::App for MyApp {
             }
         }
 
-        // 中央パネル：波形描画とログ表示
+        //
+        // 6) 中央パネル：波形描画とログ表示
+        //
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("My Rust EGUI App - Single-Step ON/OFF Waveform");
 
@@ -503,8 +580,7 @@ impl eframe::App for MyApp {
     }
 }
 
-/// 指定の on_intervals からデジタル波形を生成する  
-/// OFF = y_offset, ON = y_offset + 1
+/// 指定の on_intervals からデジタル波形を生成する
 fn build_digital_wave(on_intervals: &Vec<Interval>, min_t: f64, max_t: f64, offset: f64) -> Line {
     let mut points = Vec::new();
     let mut current_x = min_t;
@@ -619,17 +695,7 @@ fn merge_on_intervals(sig: &mut SignalData) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 起動時は空のログ・信号・グループで初期化する
-    let app = MyApp {
-        logs: Vec::new(),
-        signals: HashMap::new(),
-        offset_to_name: HashMap::new(),
-        min_time: 0.0,
-        max_time: 10.0,
-        groups: HashMap::new(),
-        conversion_result: None,
-    };
-
+    let app = MyApp::new();
     let native_options = eframe::NativeOptions::default();
     eframe::run_native(
         "My Rust EGUI App - Single-Step ON/OFF Waveform",
