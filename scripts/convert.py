@@ -3,19 +3,23 @@ import re
 import sys
 import json
 import os
+from datetime import datetime, timezone
 
 def convert_log_to_json(input_file):
     # 正規表現パターン:
+    #   - 行の先頭に「[」から「]」までの部分（および後続の空白）を任意でマッチ(なくてもよい)
     #   - 最初の部分でタイムスタンプを (\S+)
     #   - その後の2フィールドを無視
     #   - "[INFO]" などのログレベルを含む部分の後、
     #   - コロン区切りで name をキャプチャし、
     #   - その後の全体を comment としてキャプチャします。
     pattern = re.compile(
-        r'^(?P<timestamp>\S+):\S+:\S+:\[.*?\]\s+(?P<name>[^:]+):\s+(?P<comment>.+)$'
+        r'^(?:\[[^\]]+\]\s+)?(?P<timestamp>\S+):\S+:\S+:\[.*?\]\s+(?P<name>[^:]+):\s+(?P<comment>.+)$'
     )
     
     records = []
+    cutoff_date = datetime(2025, 1, 1, tzinfo=timezone.utc)
+
     with open(input_file, 'r', encoding='utf-8') as f:
         for line in f:
             line = line.strip()
@@ -23,12 +27,24 @@ def convert_log_to_json(input_file):
                 continue
             m = pattern.match(line)
             if m:
+                timestamp_str = m.group("timestamp")
+                try:
+                    # "Z" を "+00:00" に置換してからパース（これによりoffset-awareなdatetimeが得られる）
+                    ts = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+                except ValueError:
+                    print(f"Warning: Unable to parse timestamp: {timestamp_str}", file=sys.stderr)
+                    continue
+
+                # 指定日時より前のデータはスキップ
+                if ts < cutoff_date:
+                    continue
+
                 record = {
-                    "timestamp": m.group("timestamp"),
-                    "type": "PULSE",  # 固定値
-                    "group": "group1",  # 固定値
+                    "timestamp": timestamp_str,
+                    "type": "PULSE",
+                    "group": "group1",
                     "name": m.group("name"),
-                    "value": 400,    # 固定値
+                    "value": 400,
                     "comment": m.group("comment")
                 }
                 records.append(record)
