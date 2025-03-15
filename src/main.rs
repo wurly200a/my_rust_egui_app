@@ -91,7 +91,6 @@ impl MyApp {
 
     /// エラーをユーザーに報知する汎用関数（英語メッセージ）
     fn show_error_dialog(&mut self, message: &str) {
-        // 標準エラー出力に残しつつ、ダイアログ表示用のフィールドにもセット
         eprintln!("{}", message);
         self.error_dialog_message = Some(message.to_owned());
     }
@@ -204,7 +203,7 @@ impl eframe::App for MyApp {
                 .show(ctx, |ui| {
                     ui.label(msg);
                     if ui.button("OK").clicked() {
-                        self.error_dialog_message = None; // ダイアログを閉じる
+                        self.error_dialog_message = None;
                     }
                 });
         }
@@ -242,7 +241,6 @@ impl eframe::App for MyApp {
                     ui.label(format!("Status: {}", if result.ok { "OK" } else { "NG" }));
                     if ui.button("OK").clicked() {
                         if result.ok {
-                            // 変換成功なら JSON ファイルを読み込み
                             if let Some(json_path) = &result.json_file {
                                 match fs::read_to_string(json_path) {
                                     Ok(data) => {
@@ -261,7 +259,6 @@ impl eframe::App for MyApp {
                                                 self.recalc();
                                             }
                                             Err(_) => {
-                                                // 英語メッセージ
                                                 self.show_error_dialog(
                                                     "Failed to parse JSON data.",
                                                 );
@@ -269,7 +266,6 @@ impl eframe::App for MyApp {
                                         }
                                     }
                                     Err(e) => {
-                                        // 英語メッセージ
                                         self.show_error_dialog(&format!("File read error: {}", e));
                                     }
                                 }
@@ -308,7 +304,6 @@ impl eframe::App for MyApp {
                                                 self.recalc();
                                             }
                                             Err(_) => {
-                                                // 英語メッセージ
                                                 self.show_error_dialog(
                                                     "Failed to parse JSON data.",
                                                 );
@@ -316,12 +311,10 @@ impl eframe::App for MyApp {
                                         }
                                     }
                                     Err(e) => {
-                                        // 英語メッセージ
                                         self.show_error_dialog(&format!("File read error: {}", e));
                                     }
                                 }
                             } else {
-                                // 英語メッセージ
                                 self.show_error_dialog("Open only supports .json files.");
                             }
                         }
@@ -357,17 +350,14 @@ impl eframe::App for MyApp {
                                         (stdout, stderr, ok, json_file)
                                     }
                                     Err(e) => {
-                                        // 英語メッセージ
                                         self.show_error_dialog(&format!(
                                             "Failed to execute the conversion script: {}",
                                             e
                                         ));
-                                        // 失敗時は適当な値を返しておく
                                         ("".to_string(), "".to_string(), false, None)
                                     }
                                 };
 
-                                // 変換結果を状態に保持
                                 self.conversion_result = Some(ConversionResult {
                                     command: command_str,
                                     stdout,
@@ -376,7 +366,6 @@ impl eframe::App for MyApp {
                                     json_file,
                                 });
                             } else {
-                                // .json の場合はそのまま開く
                                 match fs::read_to_string(&path_str) {
                                     Ok(data) => {
                                         match serde_json::from_str::<Vec<LogEntry>>(&data) {
@@ -394,7 +383,6 @@ impl eframe::App for MyApp {
                                                 self.recalc();
                                             }
                                             Err(_) => {
-                                                // 英語メッセージ
                                                 self.show_error_dialog(
                                                     "Failed to parse JSON data.",
                                                 );
@@ -402,7 +390,6 @@ impl eframe::App for MyApp {
                                         }
                                     }
                                     Err(e) => {
-                                        // 英語メッセージ
                                         self.show_error_dialog(&format!("File read error: {}", e));
                                     }
                                 }
@@ -418,46 +405,47 @@ impl eframe::App for MyApp {
         });
 
         //
-        // 4) 左側パネル：グループ／信号チェックボックス
+        // 4) 左側パネル：グループ／信号チェックボックス（折りたたみ＆スクロール対応）
         //
         egui::SidePanel::left("group_panel")
             .resizable(true)
             .show(ctx, |ui| {
                 ui.heading("Groups");
 
-                let mut group_keys: Vec<String> = self.groups.keys().cloned().collect();
-                group_keys.sort();
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    let mut group_keys: Vec<String> = self.groups.keys().cloned().collect();
+                    group_keys.sort();
 
-                for group_key in group_keys {
-                    let group = self.groups.get_mut(&group_key).unwrap();
-                    let visible_count = group
-                        .signals
-                        .iter()
-                        .filter(|s| self.signals[*s].visible)
-                        .count();
-                    let mut group_check = visible_count > 0;
-                    let group_response = ui.checkbox(&mut group_check, &group.name);
-
-                    if group_response.changed() {
-                        for s in &group.signals {
-                            if let Some(sig) = self.signals.get_mut(s) {
-                                sig.visible = group_check;
-                            }
-                        }
-                    }
-
-                    ui.indent(format!("group_indent_{}", group.name), |ui| {
-                        for s in &group.signals {
-                            if let Some(sig) = self.signals.get_mut(s) {
-                                let mut check = sig.visible;
-                                if ui.checkbox(&mut check, &sig.name).changed() {
-                                    sig.visible = check;
+                    for group_key in group_keys {
+                        // ここでは各グループを CollapsingHeader で表示し、内部にグループ全体の ON/OFF トグルと各信号のチェックボックスを配置
+                        let group = self.groups.get_mut(&group_key).unwrap();
+                        let group_all_visible =
+                            group.signals.iter().all(|s| self.signals[s].visible);
+                        egui::CollapsingHeader::new(&group.name)
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                let mut group_check = group_all_visible;
+                                if ui.checkbox(&mut group_check, "Toggle All").changed() {
+                                    for s in &group.signals {
+                                        if let Some(sig) = self.signals.get_mut(s) {
+                                            sig.visible = group_check;
+                                        }
+                                    }
                                 }
-                            }
-                        }
-                    });
-                    ui.separator();
-                }
+                                ui.indent("group_signals", |ui| {
+                                    for s in &group.signals {
+                                        if let Some(sig) = self.signals.get_mut(s) {
+                                            let mut check = sig.visible;
+                                            if ui.checkbox(&mut check, &sig.name).changed() {
+                                                sig.visible = check;
+                                            }
+                                        }
+                                    }
+                                });
+                            });
+                        ui.separator();
+                    }
+                });
             });
 
         //
