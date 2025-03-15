@@ -5,15 +5,20 @@ import json
 import os
 from datetime import datetime, timezone
 
-# グローバルリスト: 最終的にレコードを蓄積する
+# グローバルリスト: ログレコードを蓄積する
 records = []
+# グローバル辞書: (group, name) ペアで、表示するものだけ true を設定する
+default_visibilities = {}
 
 def add_record(timestamp, type_val, group, name, value, comment):
     """
-    サブルーチンB:
-    各フィールド（timestamp, type, group, name, value, comment）を直接引数として受け取り、
-    レコードを生成してグローバル変数 records に追加する。
+    各フィールドを受け取りレコードを生成し、records に追加する。
+    また、コメントに "[default_visible]" が含まれていれば、
+    該当の (group, name) ペアを default_visibilities に true として登録する。
     """
+    if not timestamp:
+        return
+
     record = {
         "timestamp": timestamp,
         "type": type_val,
@@ -23,21 +28,20 @@ def add_record(timestamp, type_val, group, name, value, comment):
         "comment": comment
     }
     records.append(record)
-
-
-import re
+    
+    # コメントに "[default_visible]" があれば、表示対象として true を設定
+    if comment and "[default_visible]" in comment:
+        default_visibilities[(group, name)] = True
 
 def handle_pattern1(m, timestamp):
     # 1 番目のパターンの処理
     name = m.group("name")
     comment = m.group("comment")
-    # "hoge.c-100" のような形式の場合、'-' で分割して先頭部分がグループ名となると仮定する
-    # もしくは、正規表現で '.c' で終わる部分を抽出する
+    # "hoge.c-100" のような形式の場合、'-' で分割して先頭部分をグループ名とする
     group_match = re.match(r'^(?P<group>[^-]+\.c)', name)
     if group_match:
         group_val = group_match.group("group")
     else:
-        # 該当しない場合はデフォルトのグループ値（例："group1"）を使用
         group_val = "group1"
     
     add_record(
@@ -50,11 +54,10 @@ def handle_pattern1(m, timestamp):
     )
 
 def handle_pattern2(m, timestamp):
-    # 2 番目のパターンの処理
+    # 2 番目のパターンの処理（必要に応じて実装）
     name = m.group("name")
     priority = m.group("priority")
     comment = m.group("comment")
-    # 例として、priority に基づいた追加処理も可能
     if "hoge.c" in name:
         add_record(
             timestamp if timestamp is not None else "",
@@ -67,15 +70,11 @@ def handle_pattern2(m, timestamp):
 
 def process_line_sub(line, timestamp=None):
     """
-    サブルーチンA:
-    複数の正規表現による処理を順次実行し、合致した場合はサブルーチンB (add_record) を呼び出す。
-    ここでは例として「name: comment」形式のパターンを処理する。
+    複数の正規表現を試し、合致した場合は add_record を呼び出す
     """
-
-    # パターンと処理関数のリスト
     pattern_handlers = [
         (re.compile(r'^\[.*?\]\s+(?P<name>[^:]+):\s+(?P<comment>.+)$'), handle_pattern1),
-#        (re.compile(r'^\[(?P<priority>.+)\]\s+(?P<name>[^:]+):\s+(?P<comment>.+)$'), handle_pattern2),
+        # (re.compile(r'^\[(?P<priority>.+)\]\s+(?P<name>[^:]+):\s+(?P<comment>.+)$'), handle_pattern2),
     ]
 
     for pat, handler in pattern_handlers:
@@ -91,18 +90,17 @@ def main():
     
     input_file = sys.argv[1]
     
-    # ファイルの全行を読み込む
+    # ファイル全行を読み込み
     with open(input_file, 'r', encoding='utf-8') as f:
         lines = f.readlines()
 
-    # 先頭にある角括弧タイムスタンプ（例: [05:30:56.917948]）を除去
+    # 角括弧タイムスタンプ（例: [05:30:56.917948]）の除去用正規表現
     bracket_ts_re = re.compile(r'^\[\d{2}:\d{2}:\d{2}\.\d+\]\s*')
-    # 行の先頭にある前半部から、ISO8601形式のタイムスタンプのみを "ts" としてキャプチャする正規表現
-    # 例: "2025-03-11T05:30:54.867Z:I:0x00100000:" → ts: "2025-03-11T05:30:54.867Z"
+    # ISO8601 タイムスタンプをキャプチャする正規表現
     prefix_re = re.compile(
         r'^(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z):[^:]+:[^:]+:\s*(?P<rest>.*)$'
     )
-    # 指定日時（この例では2025年1月1日以降）のみ処理するための基準日時（offset-aware）
+    # 2025年1月1日以降のデータのみ処理するための基準日時
     cutoff_date = datetime(2025, 1, 1, tzinfo=timezone.utc)
 
     for line in lines:
@@ -110,12 +108,11 @@ def main():
         if not line:
             continue
         
-        # 先頭の角括弧タイムスタンプを除去
+        # 角括弧タイムスタンプの除去
         line = bracket_ts_re.sub("", line)
         
         m = prefix_re.match(line)
         if m:
-            # "ts" グループでISO8601形式のタイムスタンプ全体を取得
             ts_extracted = m.group("ts")
             try:
                 dt = datetime.fromisoformat(ts_extracted.replace("Z", "+00:00"))
@@ -131,12 +128,20 @@ def main():
 
             rest = m.group("rest")
             process_line_sub(rest, ts_extracted)
-#        else:
-#            process_line_sub(line)
+        else:
+            process_line_sub(line)
     
     output_file = os.path.splitext(input_file)[0] + ".json"
+    output = {
+        "logs": records,
+        # default_visibility では、true として登録されたものだけ出力する
+        "default_visibility": [
+            {"group": key[0], "name": key[1], "visible": True}
+            for key, value in default_visibilities.items() if value
+        ]
+    }
     with open(output_file, 'w', encoding='utf-8') as f:
-        json.dump(records, f, indent=2)
+        json.dump(output, f, indent=2)
     
     print(f"Converted {input_file} to {output_file}")
 
