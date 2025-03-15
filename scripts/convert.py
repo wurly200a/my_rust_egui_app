@@ -24,28 +24,64 @@ def add_record(timestamp, type_val, group, name, value, comment):
     }
     records.append(record)
 
+
+import re
+
+def handle_pattern1(m, timestamp):
+    # 1 番目のパターンの処理
+    name = m.group("name")
+    comment = m.group("comment")
+    # "hoge.c-100" のような形式の場合、'-' で分割して先頭部分がグループ名となると仮定する
+    # もしくは、正規表現で '.c' で終わる部分を抽出する
+    group_match = re.match(r'^(?P<group>[^-]+\.c)', name)
+    if group_match:
+        group_val = group_match.group("group")
+    else:
+        # 該当しない場合はデフォルトのグループ値（例："group1"）を使用
+        group_val = "group1"
+    
+    add_record(
+        timestamp if timestamp is not None else "",
+        "PULSE",
+        group_val,
+        name,
+        400,
+        comment
+    )
+
+def handle_pattern2(m, timestamp):
+    # 2 番目のパターンの処理
+    name = m.group("name")
+    priority = m.group("priority")
+    comment = m.group("comment")
+    # 例として、priority に基づいた追加処理も可能
+    if "hoge.c" in name:
+        add_record(
+            timestamp if timestamp is not None else "",
+            "PULSE",
+            "group1",
+            name,
+            400,
+            comment
+        )
+
 def process_line_sub(line, timestamp=None):
     """
     サブルーチンA:
     複数の正規表現による処理を順次実行し、合致した場合はサブルーチンB (add_record) を呼び出す。
     ここでは例として「name: comment」形式のパターンを処理する。
     """
-    patterns = [
-#        re.compile(r'^(?P<name>\S+):\s+(?P<comment>.+)$'),
-        re.compile(r'^\[.*?\]\s+(?P<name>[^:]+):\s+(?P<comment>.+)$'),
+
+    # パターンと処理関数のリスト
+    pattern_handlers = [
+        (re.compile(r'^\[.*?\]\s+(?P<name>[^:]+):\s+(?P<comment>.+)$'), handle_pattern1),
+#        (re.compile(r'^\[(?P<priority>.+)\]\s+(?P<name>[^:]+):\s+(?P<comment>.+)$'), handle_pattern2),
     ]
-    
-    for pat in patterns:
+
+    for pat, handler in pattern_handlers:
         m = pat.search(line)
         if m:
-            add_record(
-                timestamp if timestamp is not None else "",
-                "PULSE",
-                "group1",
-                m.group("name"),
-                400,
-                m.group("comment")
-            )
+            handler(m, timestamp)
             # 複数パターンにヒットする可能性があるため、ループは継続
 
 def main():
