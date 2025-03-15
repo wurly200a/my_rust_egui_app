@@ -199,6 +199,84 @@ impl eframe::App for MyApp {
                             }
                         }
                     }
+                    if ui.button("Import").clicked() {
+                        ui.close_menu();
+                        if let Some(path) = FileDialog::new().pick_file() {
+                            let path_str = path.to_string_lossy().to_string();
+                            // .json 以外の場合は変換処理を実行
+                            if !path_str.to_lowercase().ends_with(".json") {
+                                // 変換スクリプトの実行（python3 を使用して scripts/convert.py を呼び出す例）
+                                let output = Command::new("python3")
+                                    .arg("scripts/convert.py")
+                                    .arg(&path_str)
+                                    .output();
+
+                                if let Ok(output) = output {
+                                    if output.status.success() {
+                                        // 入力ファイル名の拡張子を .json に変更して生成ファイル名を取得
+                                        let json_path = std::path::Path::new(&path_str)
+                                            .with_extension("json")
+                                            .to_string_lossy()
+                                            .to_string();
+                                        // 生成された JSON ファイルを読み込む
+                                        if let Ok(data) = std::fs::read_to_string(&json_path) {
+                                            if let Ok(mut logs) =
+                                                serde_json::from_str::<Vec<LogEntry>>(&data)
+                                            {
+                                                for log in &mut logs {
+                                                    log.timestamp_num =
+                                                        parse_timestamp_to_f64(&log.timestamp);
+                                                }
+                                                logs.sort_by(|a, b| {
+                                                    a.timestamp_num
+                                                        .partial_cmp(&b.timestamp_num)
+                                                        .unwrap()
+                                                });
+                                                self.logs = logs;
+                                                self.recalc();
+                                            } else {
+                                                eprintln!("JSON のパースに失敗しました");
+                                            }
+                                        } else {
+                                            eprintln!(
+                                                "生成されたファイル {} の読み込みに失敗しました",
+                                                json_path
+                                            );
+                                        }
+                                    } else {
+                                        eprintln!(
+                                            "変換スクリプトの実行に失敗しました: {:?}",
+                                            output
+                                        );
+                                    }
+                                } else {
+                                    eprintln!("変換スクリプトを実行できませんでした");
+                                }
+                            } else {
+                                // すでに .json ファイルの場合は、Open の処理と同様に読み込みます
+                                if let Ok(data) = std::fs::read_to_string(&path_str) {
+                                    if let Ok(mut logs) =
+                                        serde_json::from_str::<Vec<LogEntry>>(&data)
+                                    {
+                                        for log in &mut logs {
+                                            log.timestamp_num =
+                                                parse_timestamp_to_f64(&log.timestamp);
+                                        }
+                                        logs.sort_by(|a, b| {
+                                            a.timestamp_num.partial_cmp(&b.timestamp_num).unwrap()
+                                        });
+                                        self.logs = logs;
+                                        self.recalc();
+                                    } else {
+                                        eprintln!("JSON のパースに失敗しました");
+                                    }
+                                } else {
+                                    eprintln!("ファイル読み込みエラー: {}", path_str);
+                                }
+                            }
+                        }
+                    }
+
                     if ui.button("Exit").clicked() {
                         std::process::exit(0);
                     }
