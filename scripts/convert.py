@@ -4,7 +4,7 @@ import sys
 import json
 import os
 
-def convert_log_to_ulg(input_file):
+def convert_log_to_json(input_file):
     # 正規表現パターン:
     #   - 最初の部分でタイムスタンプを (\S+)
     #   - その後の2フィールドを無視
@@ -43,10 +43,10 @@ if __name__ == '__main__':
         sys.exit(1)
     
     input_file = sys.argv[1]
-    records = convert_log_to_ulg(input_file)
+    records = convert_log_to_json(input_file)
     
-    # 入力ファイルの拡張子を .ulg に変更
-    output_file = os.path.splitext(input_file)[0] + ".ulg"
+    # 入力ファイルの拡張子を .json に変更
+    output_file = os.path.splitext(input_file)[0] + ".json"
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(records, f, indent=2)
     
