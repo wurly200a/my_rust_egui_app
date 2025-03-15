@@ -9,7 +9,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::ops::RangeInclusive;
 
-/// ログの1エントリ（.ulg の JSON）
+/// ログの1エントリ（.json の JSON）
 #[derive(Debug, Deserialize, Serialize)]
 struct LogEntry {
     timestamp: String,
@@ -341,7 +341,7 @@ fn merge_on_intervals(sig: &mut SignalData) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let path = "example.ulg";
+    let path = "example.json";
     let data = fs::read_to_string(path)?;
     let mut logs: Vec<LogEntry> = serde_json::from_str(&data)?;
 
