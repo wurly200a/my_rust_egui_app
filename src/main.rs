@@ -3,11 +3,13 @@ use eframe;
 use egui;
 use egui::Color32;
 use egui_plot::{Legend, Line, Plot, PlotPoints, PlotUi};
+use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::ops::RangeInclusive;
+use std::process::Command;
 
 /// ログの1エントリ（.json の JSON）
 #[derive(Debug, Deserialize, Serialize)]
@@ -60,6 +62,80 @@ struct MyApp {
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Menu
+        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+            egui::menu::bar(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    if ui.button("Open").clicked() {
+                        ui.close_menu(); // メニューを閉じる
+                                         // ファイルダイアログを表示
+                        if let Some(path) = FileDialog::new().pick_file() {
+                            let path_str = path.to_string_lossy().to_string();
+                            if path_str.to_lowercase().ends_with(".json") {
+                                // .json の場合、そのまま読み込む
+                                match std::fs::read_to_string(&path_str) {
+                                    Ok(data) => {
+                                        // JSON を読み込んで、アプリのデータ構造にパースする処理
+                                        if let Ok(logs) =
+                                            serde_json::from_str::<Vec<LogEntry>>(&data)
+                                        {
+                                            self.logs = logs;
+                                            // 必要に応じて再計算処理などを実行
+                                        } else {
+                                            eprintln!("JSON のパースに失敗しました");
+                                        }
+                                    }
+                                    Err(e) => eprintln!("ファイル読み込みエラー: {}", e),
+                                }
+                            } else {
+                                // 拡張子が .json 以外の場合、所定の変換スクリプトを実行
+                                // 例: 拡張子に応じて変換スクリプト名を決定する
+                                let ext = path
+                                    .extension()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("")
+                                    .to_lowercase();
+                                // ここでは例として、"convert_{ext}_to_json" というスクリプトを実行する
+                                let script = format!("convert_{}_to_json", ext);
+                                match Command::new(script).arg(&path_str).output() {
+                                    Ok(output) => {
+                                        if output.status.success() {
+                                            // 変換後のファイルパスを出力から得るか、
+                                            // 決まった場所に保存される前提にして、そこで読み込む
+                                            // ここでは例として、"converted.json" とする
+                                            let converted_path = "converted.json";
+                                            match std::fs::read_to_string(converted_path) {
+                                                Ok(data) => {
+                                                    if let Ok(logs) =
+                                                        serde_json::from_str::<Vec<LogEntry>>(&data)
+                                                    {
+                                                        self.logs = logs;
+                                                    } else {
+                                                        eprintln!(
+                                                            "変換後 JSON のパースに失敗しました"
+                                                        );
+                                                    }
+                                                }
+                                                Err(e) => eprintln!(
+                                                    "変換後ファイルの読み込みエラー: {}",
+                                                    e
+                                                ),
+                                            }
+                                        } else {
+                                            eprintln!("変換スクリプトがエラー終了しました");
+                                        }
+                                    }
+                                    Err(e) => eprintln!("変換スクリプトの実行エラー: {}", e),
+                                }
+                            }
+                        }
+                    }
+                    if ui.button("Exit").clicked() {
+                        std::process::exit(0);
+                    }
+                });
+            });
+        });
         // 左側パネル：グループ／信号のチェックボックス
         egui::SidePanel::left("group_panel")
             .resizable(true)
