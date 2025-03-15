@@ -486,118 +486,14 @@ fn merge_on_intervals(sig: &mut SignalData) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let path = "example.json";
-    let data = fs::read_to_string(path)?;
-    let mut logs: Vec<LogEntry> = serde_json::from_str(&data)?;
-
-    for log in &mut logs {
-        log.timestamp_num = parse_timestamp_to_f64(&log.timestamp);
-    }
-    logs.sort_by(|a, b| a.timestamp_num.partial_cmp(&b.timestamp_num).unwrap());
-
-    let min_time = logs.first().map(|x| x.timestamp_num).unwrap_or(0.0);
-    let max_time = logs.last().map(|x| x.timestamp_num).unwrap_or(10.0);
-
-    let mut unique_names = BTreeSet::new();
-    for log in &logs {
-        unique_names.insert(log.name.clone());
-    }
-    let unique_names: Vec<String> = unique_names.into_iter().collect();
-
-    let mut signals = HashMap::new();
-    for name in &unique_names {
-        signals.insert(
-            name.clone(),
-            SignalData {
-                name: name.clone(),
-                y_offset: 0.0,
-                on_intervals: vec![],
-                is_on: None,
-                visible: true,
-                color: Color32::WHITE,
-            },
-        );
-    }
-
-    let mut groups = HashMap::<String, GroupData>::new();
-    let mut signal_to_group = HashMap::new();
-    for log in &logs {
-        if let Some(grp) = &log.group {
-            if !grp.is_empty() {
-                if !groups.contains_key(grp) {
-                    groups.insert(
-                        grp.clone(),
-                        GroupData {
-                            name: grp.clone(),
-                            signals: Vec::new(),
-                        },
-                    );
-                }
-                if !signal_to_group.contains_key(&log.name) {
-                    signal_to_group.insert(log.name.clone(), grp.clone());
-                }
-            }
-        }
-    }
-    for (signal_name, group_name) in signal_to_group {
-        if let Some(g) = groups.get_mut(&group_name) {
-            if !g.signals.contains(&signal_name) {
-                g.signals.push(signal_name);
-            }
-        }
-    }
-    for g in groups.values_mut() {
-        g.signals.sort();
-    }
-
-    for log in &logs {
-        update_signal_data(&mut signals, log);
-    }
-    for sig in signals.values_mut() {
-        merge_on_intervals(sig);
-    }
-
-    let mut group_keys: Vec<String> = groups.keys().cloned().collect();
-    group_keys.sort();
-
-    let mut ordered_signal_names = Vec::new();
-    for gk in &group_keys {
-        let group = &groups[gk];
-        for s in &group.signals {
-            ordered_signal_names.push(s.clone());
-        }
-    }
-
-    let total = ordered_signal_names.len();
-    let color_palette = [
-        Color32::RED,
-        Color32::GREEN,
-        Color32::BLUE,
-        Color32::YELLOW,
-        Color32::LIGHT_BLUE,
-        Color32::LIGHT_GREEN,
-        Color32::WHITE,
-        Color32::GOLD,
-    ];
-
-    let mut offset_to_name = HashMap::new();
-    for (i, name) in ordered_signal_names.into_iter().enumerate() {
-        let y_offset = ((total - i) * 2 - 1) as f64;
-        let color = color_palette[i % color_palette.len()];
-        if let Some(sig) = signals.get_mut(&name) {
-            sig.y_offset = y_offset;
-            sig.color = color;
-        }
-        offset_to_name.insert(y_offset as i32, name.clone());
-    }
-
+    // 起動時は空のログ・信号・グループで初期化する
     let app = MyApp {
-        logs,
-        signals,
-        offset_to_name,
-        min_time,
-        max_time,
-        groups,
+        logs: Vec::new(),
+        signals: HashMap::new(),
+        offset_to_name: HashMap::new(),
+        min_time: 0.0,
+        max_time: 10.0,
+        groups: HashMap::new(),
     };
 
     let native_options = eframe::NativeOptions::default();
@@ -606,6 +502,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         native_options,
         Box::new(|_cc| Ok(Box::new(app))),
     )?;
-
     Ok(())
 }
