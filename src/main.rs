@@ -60,6 +60,104 @@ struct MyApp {
     groups: HashMap<String, GroupData>,
 }
 
+impl MyApp {
+    fn recalc(&mut self) {
+        // タイムレンジの再計算
+        self.min_time = self.logs.first().map(|x| x.timestamp_num).unwrap_or(0.0);
+        self.max_time = self.logs.last().map(|x| x.timestamp_num).unwrap_or(10.0);
+
+        // ユニークなシグナル名の抽出と signals の再初期化
+        use std::collections::BTreeSet;
+        let mut unique_names = BTreeSet::new();
+        for log in &self.logs {
+            unique_names.insert(log.name.clone());
+        }
+        let unique_names: Vec<String> = unique_names.into_iter().collect();
+        self.signals.clear();
+        for name in &unique_names {
+            self.signals.insert(
+                name.clone(),
+                SignalData {
+                    name: name.clone(),
+                    y_offset: 0.0,
+                    on_intervals: vec![],
+                    is_on: None,
+                    visible: true,
+                    color: egui::Color32::WHITE,
+                },
+            );
+        }
+
+        // グループの再構築
+        self.groups.clear();
+        let mut signal_to_group = std::collections::HashMap::new();
+        for log in &self.logs {
+            if let Some(grp) = &log.group {
+                if !grp.is_empty() {
+                    self.groups.entry(grp.clone()).or_insert_with(|| GroupData {
+                        name: grp.clone(),
+                        signals: Vec::new(),
+                    });
+                    if !signal_to_group.contains_key(&log.name) {
+                        signal_to_group.insert(log.name.clone(), grp.clone());
+                    }
+                }
+            }
+        }
+        for (signal_name, group_name) in signal_to_group {
+            if let Some(g) = self.groups.get_mut(&group_name) {
+                if !g.signals.contains(&signal_name) {
+                    g.signals.push(signal_name);
+                }
+            }
+        }
+        for g in self.groups.values_mut() {
+            g.signals.sort();
+        }
+
+        // ログデータからシグナルの on_intervals の更新
+        for log in &self.logs {
+            update_signal_data(&mut self.signals, log);
+        }
+        for sig in self.signals.values_mut() {
+            merge_on_intervals(sig);
+        }
+
+        // シグナルの表示順（y_offset）と凡例用の offset_to_name の再計算
+        let mut group_keys: Vec<String> = self.groups.keys().cloned().collect();
+        group_keys.sort();
+        let mut ordered_signal_names = Vec::new();
+        for gk in &group_keys {
+            if let Some(group) = self.groups.get(gk) {
+                for s in &group.signals {
+                    ordered_signal_names.push(s.clone());
+                }
+            }
+        }
+        let total = ordered_signal_names.len();
+        let color_palette = [
+            egui::Color32::RED,
+            egui::Color32::GREEN,
+            egui::Color32::BLUE,
+            egui::Color32::YELLOW,
+            egui::Color32::LIGHT_BLUE,
+            egui::Color32::LIGHT_GREEN,
+            egui::Color32::WHITE,
+            egui::Color32::GOLD,
+        ];
+        self.offset_to_name.clear();
+        for (i, name) in ordered_signal_names.into_iter().enumerate() {
+            let y_offset = ((total - i) * 2 - 1) as f64;
+            let color = color_palette[i % color_palette.len()];
+            if let Some(sig) = self.signals.get_mut(&name) {
+                sig.y_offset = y_offset;
+                sig.color = color;
+            }
+            self.offset_to_name.insert(y_offset as i32, name.clone());
+        }
+    }
+}
+
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Menu
@@ -68,19 +166,27 @@ impl eframe::App for MyApp {
                 ui.menu_button("File", |ui| {
                     if ui.button("Open").clicked() {
                         ui.close_menu(); // メニューを閉じる
-                                         // ファイルダイアログを表示
                         if let Some(path) = FileDialog::new().pick_file() {
                             let path_str = path.to_string_lossy().to_string();
                             if path_str.to_lowercase().ends_with(".json") {
-                                // .json の場合、そのまま読み込む
                                 match std::fs::read_to_string(&path_str) {
                                     Ok(data) => {
-                                        // JSON を読み込んで、アプリのデータ構造にパースする処理
-                                        if let Ok(logs) =
+                                        if let Ok(mut logs) =
                                             serde_json::from_str::<Vec<LogEntry>>(&data)
                                         {
+                                            // ログデータの前処理
+                                            for log in &mut logs {
+                                                log.timestamp_num =
+                                                    parse_timestamp_to_f64(&log.timestamp);
+                                            }
+                                            logs.sort_by(|a, b| {
+                                                a.timestamp_num
+                                                    .partial_cmp(&b.timestamp_num)
+                                                    .unwrap()
+                                            });
                                             self.logs = logs;
-                                            // 必要に応じて再計算処理などを実行
+                                            // ここで再計算を実行
+                                            self.recalc();
                                         } else {
                                             eprintln!("JSON のパースに失敗しました");
                                         }
@@ -88,45 +194,8 @@ impl eframe::App for MyApp {
                                     Err(e) => eprintln!("ファイル読み込みエラー: {}", e),
                                 }
                             } else {
-                                // 拡張子が .json 以外の場合、所定の変換スクリプトを実行
-                                // 例: 拡張子に応じて変換スクリプト名を決定する
-                                let ext = path
-                                    .extension()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("")
-                                    .to_lowercase();
-                                // ここでは例として、"convert_{ext}_to_json" というスクリプトを実行する
-                                let script = format!("convert_{}_to_json", ext);
-                                match Command::new(script).arg(&path_str).output() {
-                                    Ok(output) => {
-                                        if output.status.success() {
-                                            // 変換後のファイルパスを出力から得るか、
-                                            // 決まった場所に保存される前提にして、そこで読み込む
-                                            // ここでは例として、"converted.json" とする
-                                            let converted_path = "converted.json";
-                                            match std::fs::read_to_string(converted_path) {
-                                                Ok(data) => {
-                                                    if let Ok(logs) =
-                                                        serde_json::from_str::<Vec<LogEntry>>(&data)
-                                                    {
-                                                        self.logs = logs;
-                                                    } else {
-                                                        eprintln!(
-                                                            "変換後 JSON のパースに失敗しました"
-                                                        );
-                                                    }
-                                                }
-                                                Err(e) => eprintln!(
-                                                    "変換後ファイルの読み込みエラー: {}",
-                                                    e
-                                                ),
-                                            }
-                                        } else {
-                                            eprintln!("変換スクリプトがエラー終了しました");
-                                        }
-                                    }
-                                    Err(e) => eprintln!("変換スクリプトの実行エラー: {}", e),
-                                }
+                                // .json 以外のファイルの場合の処理
+                                // ...
                             }
                         }
                     }
