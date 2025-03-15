@@ -5,65 +5,104 @@ import json
 import os
 from datetime import datetime, timezone
 
-def convert_log_to_json(input_file):
-    # 正規表現パターン:
-    #   - 行の先頭に「[」から「]」までの部分（および後続の空白）を任意でマッチ(なくてもよい)
-    #   - 最初の部分でタイムスタンプを (\S+)
-    #   - その後の2フィールドを無視
-    #   - "[INFO]" などのログレベルを含む部分の後、
-    #   - コロン区切りで name をキャプチャし、
-    #   - その後の全体を comment としてキャプチャします。
-    pattern = re.compile(
-        r'^(?:\[[^\]]+\]\s+)?(?P<timestamp>\S+):\S+:\S+:\[.*?\]\s+(?P<name>[^:]+):\s+(?P<comment>.+)$'
-    )
+# グローバルリスト: 最終的にレコードを蓄積する
+records = []
+
+def add_record(timestamp, type_val, group, name, value, comment):
+    """
+    サブルーチンB:
+    各フィールド（timestamp, type, group, name, value, comment）を直接引数として受け取り、
+    レコードを生成してグローバル変数 records に追加する。
+    """
+    record = {
+        "timestamp": timestamp,
+        "type": type_val,
+        "group": group,
+        "name": name,
+        "value": value,
+        "comment": comment
+    }
+    records.append(record)
+
+def process_line_sub(line, timestamp=None):
+    """
+    サブルーチンA:
+    複数の正規表現による処理を順次実行し、合致した場合はサブルーチンB (add_record) を呼び出す。
+    ここでは例として「name: comment」形式のパターンを処理する。
+    """
+    patterns = [
+#        re.compile(r'^(?P<name>\S+):\s+(?P<comment>.+)$'),
+        re.compile(r'^\[.*?\]\s+(?P<name>[^:]+):\s+(?P<comment>.+)$'),
+    ]
     
-    records = []
-    cutoff_date = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    for pat in patterns:
+        m = pat.search(line)
+        if m:
+            add_record(
+                timestamp if timestamp is not None else "",
+                "PULSE",
+                "group1",
+                m.group("name"),
+                400,
+                m.group("comment")
+            )
+            # 複数パターンにヒットする可能性があるため、ループは継続
 
-    with open(input_file, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            m = pattern.match(line)
-            if m:
-                timestamp_str = m.group("timestamp")
-                try:
-                    # "Z" を "+00:00" に置換してからパース（これによりoffset-awareなdatetimeが得られる）
-                    ts = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-                except ValueError:
-                    print(f"Warning: Unable to parse timestamp: {timestamp_str}", file=sys.stderr)
-                    continue
-
-                # 指定日時より前のデータはスキップ
-                if ts < cutoff_date:
-                    continue
-
-                record = {
-                    "timestamp": timestamp_str,
-                    "type": "PULSE",
-                    "group": "group1",
-                    "name": m.group("name"),
-                    "value": 400,
-                    "comment": m.group("comment")
-                }
-                records.append(record)
-            else:
-                # 正規表現に合致しない行があればスキップするか、エラー出力する
-                print(f"Warning: Unable to parse line: {line}", file=sys.stderr)
-    return records
-
-if __name__ == '__main__':
+def main():
     if len(sys.argv) != 2:
         print("Usage: python convert.py input.log")
         sys.exit(1)
     
     input_file = sys.argv[1]
-    records = convert_log_to_json(input_file)
     
-    # 入力ファイルの拡張子を .json に変更
+    # ファイルの全行を読み込む
+    with open(input_file, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+
+    # 先頭にある角括弧タイムスタンプ（例: [05:30:56.917948]）を除去
+    bracket_ts_re = re.compile(r'^\[\d{2}:\d{2}:\d{2}\.\d+\]\s*')
+    # 行の先頭にある前半部から、ISO8601形式のタイムスタンプのみを "ts" としてキャプチャする正規表現
+    # 例: "2025-03-11T05:30:54.867Z:I:0x00100000:" → ts: "2025-03-11T05:30:54.867Z"
+    prefix_re = re.compile(
+        r'^(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z):[^:]+:[^:]+:\s*(?P<rest>.*)$'
+    )
+    # 指定日時（この例では2025年1月1日以降）のみ処理するための基準日時（offset-aware）
+    cutoff_date = datetime(2025, 1, 1, tzinfo=timezone.utc)
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        # 先頭の角括弧タイムスタンプを除去
+        line = bracket_ts_re.sub("", line)
+        
+        m = prefix_re.match(line)
+        if m:
+            # "ts" グループでISO8601形式のタイムスタンプ全体を取得
+            ts_extracted = m.group("ts")
+            try:
+                dt = datetime.fromisoformat(ts_extracted.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+            except ValueError:
+                print(f"Warning: Unable to parse timestamp: {ts_extracted}", file=sys.stderr)
+                continue
+
+            # 指定日時より前のデータはスキップ
+            if dt < cutoff_date:
+                continue
+
+            rest = m.group("rest")
+            process_line_sub(rest, ts_extracted)
+#        else:
+#            process_line_sub(line)
+    
     output_file = os.path.splitext(input_file)[0] + ".json"
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(records, f, indent=2)
     
     print(f"Converted {input_file} to {output_file}")
+
+if __name__ == '__main__':
+    main()
