@@ -50,6 +50,16 @@ struct GroupData {
     signals: Vec<String>, // 信号名リスト
 }
 
+/// 変換結果を保持する構造体（Cloneをderiveしてウィンドウ表示時にコピーを使う）
+#[derive(Clone)]
+struct ConversionResult {
+    command: String,
+    stdout: String,
+    stderr: String,
+    ok: bool,
+    json_file: Option<String>,
+}
+
 /// メインアプリケーション
 struct MyApp {
     logs: Vec<LogEntry>,
@@ -58,6 +68,8 @@ struct MyApp {
     min_time: f64,
     max_time: f64,
     groups: HashMap<String, GroupData>,
+    // 変換結果ウィンドウ表示用の状態
+    conversion_result: Option<ConversionResult>,
 }
 
 impl MyApp {
@@ -67,7 +79,6 @@ impl MyApp {
         self.max_time = self.logs.last().map(|x| x.timestamp_num).unwrap_or(10.0);
 
         // ユニークなシグナル名の抽出と signals の再初期化
-        use std::collections::BTreeSet;
         let mut unique_names = BTreeSet::new();
         for log in &self.logs {
             unique_names.insert(log.name.clone());
@@ -90,7 +101,7 @@ impl MyApp {
 
         // グループの再構築
         self.groups.clear();
-        let mut signal_to_group = std::collections::HashMap::new();
+        let mut signal_to_group = HashMap::new();
         for log in &self.logs {
             if let Some(grp) = &log.group {
                 if !grp.is_empty() {
@@ -160,21 +171,80 @@ impl MyApp {
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Menu
+        // 変換結果ウィンドウの表示（クローンを利用して borrow エラー回避）
+        if let Some(result) = self.conversion_result.clone() {
+            egui::Window::new("Conversion Result")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(format!("Command: {}", result.command));
+                    ui.separator();
+
+                    ui.label("Standard Output:");
+                    egui::ScrollArea::vertical()
+                        .id_source("conversion_stdout_scroll") // 標準出力用のユニークID
+                        .max_height(100.0)
+                        .show(ui, |ui| {
+                            ui.monospace(&result.stdout);
+                        });
+                    ui.separator();
+
+                    ui.label("Error Output:");
+                    egui::ScrollArea::vertical()
+                        .id_source("conversion_stderr_scroll") // エラー出力用のユニークID
+                        .max_height(100.0)
+                        .show(ui, |ui| {
+                            ui.monospace(&result.stderr);
+                        });
+                    ui.separator();
+
+                    ui.label(format!("Status: {}", if result.ok { "OK" } else { "NG" }));
+                    if ui.button("OK").clicked() {
+                        // 変換成功なら生成された JSON ファイルを読み込み
+                        if result.ok {
+                            if let Some(json_path) = &result.json_file {
+                                if let Ok(data) = fs::read_to_string(json_path) {
+                                    if let Ok(mut logs) =
+                                        serde_json::from_str::<Vec<LogEntry>>(&data)
+                                    {
+                                        for log in &mut logs {
+                                            log.timestamp_num =
+                                                parse_timestamp_to_f64(&log.timestamp);
+                                        }
+                                        logs.sort_by(|a, b| {
+                                            a.timestamp_num.partial_cmp(&b.timestamp_num).unwrap()
+                                        });
+                                        self.logs = logs;
+                                        self.recalc();
+                                    } else {
+                                        eprintln!("JSON のパースに失敗しました");
+                                    }
+                                } else {
+                                    eprintln!("ファイル読み込みエラー: {}", json_path);
+                                }
+                            }
+                        }
+                        // ウィンドウを閉じる
+                        self.conversion_result = None;
+                    }
+                });
+        }
+
+        // メニューバー
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("Open").clicked() {
-                        ui.close_menu(); // メニューを閉じる
+                        ui.close_menu();
                         if let Some(path) = FileDialog::new().pick_file() {
                             let path_str = path.to_string_lossy().to_string();
                             if path_str.to_lowercase().ends_with(".json") {
-                                match std::fs::read_to_string(&path_str) {
+                                match fs::read_to_string(&path_str) {
                                     Ok(data) => {
                                         if let Ok(mut logs) =
                                             serde_json::from_str::<Vec<LogEntry>>(&data)
                                         {
-                                            // ログデータの前処理
                                             for log in &mut logs {
                                                 log.timestamp_num =
                                                     parse_timestamp_to_f64(&log.timestamp);
@@ -185,7 +255,6 @@ impl eframe::App for MyApp {
                                                     .unwrap()
                                             });
                                             self.logs = logs;
-                                            // ここで再計算を実行
                                             self.recalc();
                                         } else {
                                             eprintln!("JSON のパースに失敗しました");
@@ -194,8 +263,7 @@ impl eframe::App for MyApp {
                                     Err(e) => eprintln!("ファイル読み込みエラー: {}", e),
                                 }
                             } else {
-                                // .json 以外のファイルの場合の処理
-                                // ...
+                                eprintln!("Open では .json ファイルのみをサポートしています");
                             }
                         }
                     }
@@ -203,58 +271,50 @@ impl eframe::App for MyApp {
                         ui.close_menu();
                         if let Some(path) = FileDialog::new().pick_file() {
                             let path_str = path.to_string_lossy().to_string();
-                            // .json 以外の場合は変換処理を実行
                             if !path_str.to_lowercase().ends_with(".json") {
-                                // 変換スクリプトの実行（python3 を使用して scripts/convert.py を呼び出す例）
+                                // 変換コマンドの生成
+                                let command_str =
+                                    format!("python3 scripts/convert.py {}", path_str);
+                                // 変換スクリプトの実行
                                 let output = Command::new("python3")
                                     .arg("scripts/convert.py")
                                     .arg(&path_str)
                                     .output();
-
-                                if let Ok(output) = output {
-                                    if output.status.success() {
-                                        // 入力ファイル名の拡張子を .json に変更して生成ファイル名を取得
-                                        let json_path = std::path::Path::new(&path_str)
-                                            .with_extension("json")
-                                            .to_string_lossy()
-                                            .to_string();
-                                        // 生成された JSON ファイルを読み込む
-                                        if let Ok(data) = std::fs::read_to_string(&json_path) {
-                                            if let Ok(mut logs) =
-                                                serde_json::from_str::<Vec<LogEntry>>(&data)
-                                            {
-                                                for log in &mut logs {
-                                                    log.timestamp_num =
-                                                        parse_timestamp_to_f64(&log.timestamp);
-                                                }
-                                                logs.sort_by(|a, b| {
-                                                    a.timestamp_num
-                                                        .partial_cmp(&b.timestamp_num)
-                                                        .unwrap()
-                                                });
-                                                self.logs = logs;
-                                                self.recalc();
-                                            } else {
-                                                eprintln!("JSON のパースに失敗しました");
-                                            }
+                                let (stdout, stderr, ok, json_file) = match output {
+                                    Ok(o) => {
+                                        let ok = o.status.success();
+                                        let stdout = String::from_utf8_lossy(&o.stdout).to_string();
+                                        let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+                                        let json_file = if ok {
+                                            Some(
+                                                std::path::Path::new(&path_str)
+                                                    .with_extension("json")
+                                                    .to_string_lossy()
+                                                    .to_string(),
+                                            )
                                         } else {
-                                            eprintln!(
-                                                "生成されたファイル {} の読み込みに失敗しました",
-                                                json_path
-                                            );
-                                        }
-                                    } else {
-                                        eprintln!(
-                                            "変換スクリプトの実行に失敗しました: {:?}",
-                                            output
-                                        );
+                                            None
+                                        };
+                                        (stdout, stderr, ok, json_file)
                                     }
-                                } else {
-                                    eprintln!("変換スクリプトを実行できませんでした");
-                                }
+                                    Err(e) => (
+                                        "".to_string(),
+                                        format!("Failed to execute: {}", e),
+                                        false,
+                                        None,
+                                    ),
+                                };
+                                // 変換結果を状態に保持し、モーダルウィンドウで表示
+                                self.conversion_result = Some(ConversionResult {
+                                    command: command_str,
+                                    stdout,
+                                    stderr,
+                                    ok,
+                                    json_file,
+                                });
                             } else {
-                                // すでに .json ファイルの場合は、Open の処理と同様に読み込みます
-                                if let Ok(data) = std::fs::read_to_string(&path_str) {
+                                // すでに .json ファイルの場合は Open の処理と同様に読み込み
+                                if let Ok(data) = fs::read_to_string(&path_str) {
                                     if let Ok(mut logs) =
                                         serde_json::from_str::<Vec<LogEntry>>(&data)
                                     {
@@ -283,6 +343,7 @@ impl eframe::App for MyApp {
                 });
             });
         });
+
         // 左側パネル：グループ／信号のチェックボックス
         egui::SidePanel::left("group_panel")
             .resizable(true)
@@ -326,9 +387,8 @@ impl eframe::App for MyApp {
                 }
             });
 
-        // ★★★ 表示中のシグナルだけを抽出し、y_offset と offset_to_name を再計算 ★★★
+        // 可視信号のみの表示順（y_offset）と offset_to_name の再計算
         {
-            // グループ順にソートして、可視信号を抽出
             let mut group_keys: Vec<String> = self.groups.keys().cloned().collect();
             group_keys.sort();
 
@@ -346,14 +406,12 @@ impl eframe::App for MyApp {
 
             let total_visible = visible_signals_in_order.len();
             for (i, s) in visible_signals_in_order.iter().enumerate() {
-                // 上から順に配置（例: 上位が高い y 値）
                 let offset = ((total_visible - i) * 2 - 1) as f64;
                 if let Some(sig) = self.signals.get_mut(s) {
                     sig.y_offset = offset;
                 }
             }
 
-            // offset_to_name を再構築（可視信号のみ）
             self.offset_to_name.clear();
             for (name, sig) in self.signals.iter() {
                 if sig.visible {
@@ -385,10 +443,7 @@ impl eframe::App for MyApp {
             ui.separator();
             ui.label("Timeline (Digital Waveform)");
 
-            // 凡例
             let legend = Legend::default();
-
-            // プロット描画
             let offset_to_name = self.offset_to_name.clone();
 
             Plot::new("digital_wave_plot")
@@ -572,6 +627,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         min_time: 0.0,
         max_time: 10.0,
         groups: HashMap::new(),
+        conversion_result: None,
     };
 
     let native_options = eframe::NativeOptions::default();
