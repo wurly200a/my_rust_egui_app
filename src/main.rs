@@ -775,7 +775,7 @@ impl eframe::App for MyApp {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("My Rust EGUI App - Single-Step ON/OFF Waveform");
+            ui.heading("Log Analyzer");
             egui::ScrollArea::vertical()
                 .max_height(150.0)
                 .show(ui, |ui| {
@@ -944,7 +944,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = MyApp::new();
     let native_options = eframe::NativeOptions::default();
     eframe::run_native(
-        "My Rust EGUI App - Single-Step ON/OFF Waveform",
+        "Log Analyzer",
         native_options,
         Box::new(|_cc| Ok(Box::new(app))),
     )?;
