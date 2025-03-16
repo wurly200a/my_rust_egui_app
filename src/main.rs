@@ -2,7 +2,7 @@ use chrono::{Duration, TimeZone, Utc};
 use eframe;
 use egui;
 use egui::Color32;
-use egui_plot::{Legend, Line, PlotPoints, PlotUi};
+use egui_plot::{Legend, Line, PlotPoints, PlotUi, Points};
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
 use serde_json;
@@ -842,6 +842,20 @@ impl eframe::App for MyApp {
                                         );
                                         draw_index += 1;
                                     }
+                                }
+                            }
+                        }
+                    }
+                    // 追加: 各ログのコメントがある箇所に散布点を描画
+                    for log in &self.logs {
+                        if let Some(ref comment) = log.comment {
+                            if !comment.is_empty() {
+                                if let Some(signal) = self.signals.get(&log.name) {
+                                    let point = [log.timestamp_num, signal.y_offset];
+                                    let points = Points::new(PlotPoints::from(vec![point]))
+                                        .name(format!("{} (comment: {})", log.name, comment))
+                                        .radius(4.0);
+                                    plot_ui.points(points);
                                 }
                             }
                         }
