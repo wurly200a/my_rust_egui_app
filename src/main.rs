@@ -2,7 +2,7 @@ use chrono::{Duration, TimeZone, Utc};
 use eframe;
 use egui;
 use egui::Color32;
-use egui_plot::{Legend, Line, PlotPoints, PlotUi, Points};
+use egui_plot::{Legend, Line, PlotPoints, PlotUi};
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
 use serde_json;
@@ -80,7 +80,8 @@ struct Interval {
 /// 1信号のON区間等の情報
 struct SignalData {
     name: String,
-    y_offset: f64, // OFF時の基準位置
+    comment: Option<String>, // 追加：各信号の最新 comment を保持
+    y_offset: f64,           // OFF時の基準位置
     on_intervals: Vec<Interval>,
     is_on: Option<f64>, // ONOFF の場合、ON開始時刻を記録
     visible: bool,      // 表示／非表示（default_visibility の定義に従う）
@@ -205,6 +206,7 @@ impl MyApp {
                 name.clone(),
                 SignalData {
                     name: name.clone(),
+                    comment: None, // 初期値は None
                     y_offset: 0.0,
                     on_intervals: vec![],
                     is_on: None,
@@ -459,7 +461,6 @@ impl eframe::App for MyApp {
 
         // Settings ウィンドウ
         if self.settings_open {
-            // 一時的に借用する
             let settings_open = &mut self.settings_open;
             let user_settings = &mut self.user_settings;
             egui::Window::new("Settings")
@@ -832,8 +833,12 @@ impl eframe::App for MyApp {
                                             self.max_time,
                                             signal_data.y_offset,
                                         );
-                                        let legend_label =
-                                            format!("{:02}: {}", draw_index, signal_data.name);
+                                        // legend の表示を signal_data.name から comment に変更
+                                        let legend_label = format!(
+                                            "{:02}: {}",
+                                            draw_index,
+                                            signal_data.comment.as_deref().unwrap_or("")
+                                        );
                                         plot_ui.line(
                                             wave_line
                                                 .color(signal_data.color)
@@ -842,20 +847,6 @@ impl eframe::App for MyApp {
                                         );
                                         draw_index += 1;
                                     }
-                                }
-                            }
-                        }
-                    }
-                    // 追加: 各ログのコメントがある箇所に散布点を描画
-                    for log in &self.logs {
-                        if let Some(ref comment) = log.comment {
-                            if !comment.is_empty() {
-                                if let Some(signal) = self.signals.get(&log.name) {
-                                    let point = [log.timestamp_num, signal.y_offset];
-                                    let points = Points::new(PlotPoints::from(vec![point]))
-                                        .name(format!("{} (comment: {})", log.name, comment))
-                                        .radius(4.0);
-                                    plot_ui.points(points);
                                 }
                             }
                         }
@@ -922,6 +913,14 @@ fn update_signal_data(signals: &mut HashMap<String, SignalData>, log: &LogEntry)
                     start: time,
                     end: time + 0.2,
                 });
+            }
+        }
+    }
+    // 各ログの comment を、非空の場合に最新のものとして更新
+    if let Some(comm) = &log.comment {
+        if !comm.is_empty() {
+            if let Some(sig) = signals.get_mut(signal_name) {
+                sig.comment = Some(comm.clone());
             }
         }
     }
