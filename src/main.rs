@@ -224,6 +224,8 @@ impl MyApp {
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.set_visuals(egui::Visuals::dark());
+
         // エラーダイアログの表示
         if let Some(msg) = self.error_dialog_message.clone() {
             egui::Window::new("Error")
