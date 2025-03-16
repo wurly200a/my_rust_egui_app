@@ -1,4 +1,4 @@
-use chrono::{Duration, NaiveDateTime, TimeZone, Utc};
+use chrono::{Duration, TimeZone, Utc};
 use eframe;
 use egui;
 use egui::Color32;
@@ -10,6 +10,35 @@ use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::ops::RangeInclusive;
 use std::process::Command;
+
+// ユーザー設定で管理する変換スクリプトの設定
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct ConversionScriptSetting {
+    name: String,
+    script_path: String,
+    // 拡張子のリスト（例: [".log", ".txt"]）―小文字で記述することを推奨
+    extensions: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct UserSettings {
+    python_path: String,
+    conversion_scripts: Vec<ConversionScriptSetting>,
+}
+
+impl Default for UserSettings {
+    fn default() -> Self {
+        Self {
+            python_path: "python3".to_string(),
+            conversion_scripts: vec![ConversionScriptSetting {
+                name: "Default Conversion".to_string(),
+                script_path: "scripts/convert.py".to_string(),
+                // 例として .log と .txt ファイルに対応
+                extensions: vec![".log".to_string(), ".txt".to_string()],
+            }],
+        }
+    }
+}
 
 /// ログの1エントリ（.json の JSON）
 #[derive(Debug, Deserialize, Serialize)]
@@ -58,7 +87,7 @@ struct SignalData {
     color: Color32,     // 固定の色
 }
 
-/// 信号グループ（例: group1, group2 ）
+/// 信号グループ（例: group1, group2）
 struct GroupData {
     name: String,
     signals: Vec<String>,
@@ -88,10 +117,18 @@ struct MyApp {
     visibility_defaults: HashMap<(String, String), bool>,
     // ファイル名（拡張子なし）を保持し、ファイル単位のグループとして利用する
     file_name: Option<String>,
+    // ユーザー設定：python3 のパスや変換スクリプトの設定
+    user_settings: UserSettings,
+    // 設定ウィンドウの表示フラグ
+    settings_open: bool,
+    // Import 実行前に候補が複数あった場合、選択するための一時状態
+    pending_import_file: Option<String>,
+    pending_script_candidates: Option<Vec<ConversionScriptSetting>>,
 }
 
 impl MyApp {
     fn new() -> Self {
+        let user_settings = Self::load_settings().unwrap_or_default();
         Self {
             logs: Vec::new(),
             signals: HashMap::new(),
@@ -103,6 +140,21 @@ impl MyApp {
             error_dialog_message: None,
             visibility_defaults: HashMap::new(),
             file_name: None,
+            user_settings,
+            settings_open: false,
+            pending_import_file: None,
+            pending_script_candidates: None,
+        }
+    }
+
+    /// ユーザー設定ファイル (user_settings.json) を読み込む
+    fn load_settings() -> Result<UserSettings, Box<dyn std::error::Error>> {
+        let settings_file = "user_settings.json";
+        if let Ok(content) = fs::read_to_string(settings_file) {
+            let settings: UserSettings = serde_json::from_str(&content)?;
+            Ok(settings)
+        } else {
+            Ok(UserSettings::default())
         }
     }
 
@@ -112,9 +164,33 @@ impl MyApp {
         self.error_dialog_message = Some(message.to_owned());
     }
 
+    /// 指定の on_intervals からデジタル波形を生成する
+    fn build_digital_wave(
+        on_intervals: &Vec<Interval>,
+        min_t: f64,
+        max_t: f64,
+        offset: f64,
+    ) -> Line {
+        let mut points = Vec::new();
+        let mut current_x = min_t;
+        points.push([current_x, offset]);
+        for iv in on_intervals {
+            if iv.start > current_x {
+                points.push([iv.start, offset]);
+            }
+            points.push([iv.start, offset + 1.0]);
+            points.push([iv.end, offset + 1.0]);
+            points.push([iv.end, offset]);
+            current_x = iv.end;
+        }
+        if current_x < max_t {
+            points.push([max_t, offset]);
+        }
+        Line::new(PlotPoints::from(points))
+    }
+
     /// ログやシグナル、グループ情報の再計算
     fn recalc(&mut self) {
-        // logs は既に timestamp_num の計算済み＆並び替え済みであることを前提とする
         self.min_time = self.logs.first().map(|x| x.timestamp_num).unwrap_or(0.0);
         self.max_time = self.logs.last().map(|x| x.timestamp_num).unwrap_or(10.0);
 
@@ -125,7 +201,6 @@ impl MyApp {
         let unique_names: Vec<String> = unique_names.into_iter().collect();
         self.signals.clear();
         for name in &unique_names {
-            // 初期は false（default_visibility で上書きされる）
             self.signals.insert(
                 name.clone(),
                 SignalData {
@@ -139,7 +214,6 @@ impl MyApp {
             );
         }
 
-        // グループ再構築
         self.groups.clear();
         let mut signal_to_group = HashMap::new();
         for log in &self.logs {
@@ -166,7 +240,6 @@ impl MyApp {
             g.signals.sort();
         }
 
-        // JSON の default_visibility の設定を各シグナルに反映（未定義なら false）
         for (name, sig) in self.signals.iter_mut() {
             let default = if let Some(group) = signal_to_group.get(name) {
                 self.visibility_defaults
@@ -179,7 +252,6 @@ impl MyApp {
             sig.visible = default;
         }
 
-        // ログデータから on_intervals を更新
         for log in &self.logs {
             update_signal_data(&mut self.signals, log);
         }
@@ -187,7 +259,6 @@ impl MyApp {
             merge_on_intervals(sig);
         }
 
-        // シグナルの表示順と offset_to_name の再計算
         let mut group_keys: Vec<String> = self.groups.keys().cloned().collect();
         group_keys.sort();
         let mut ordered_signal_names = Vec::new();
@@ -220,6 +291,47 @@ impl MyApp {
             self.offset_to_name.insert(y_offset as i32, name.clone());
         }
     }
+
+    /// 実際に変換スクリプトを実行する関数
+    fn execute_conversion(&mut self, file_path: &str, script: ConversionScriptSetting) {
+        let command_str = format!(
+            "{} {} {}",
+            self.user_settings.python_path, script.script_path, file_path
+        );
+        let output = Command::new(&self.user_settings.python_path)
+            .arg(&script.script_path)
+            .arg(file_path)
+            .output();
+        let (stdout, stderr, ok, json_file) = match output {
+            Ok(o) => {
+                let ok = o.status.success();
+                let stdout = String::from_utf8_lossy(&o.stdout).to_string();
+                let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+                let json_file = if ok {
+                    Some(
+                        std::path::Path::new(file_path)
+                            .with_extension("json")
+                            .to_string_lossy()
+                            .to_string(),
+                    )
+                } else {
+                    None
+                };
+                (stdout, stderr, ok, json_file)
+            }
+            Err(e) => {
+                self.show_error_dialog(&format!("Failed to execute the conversion script: {}", e));
+                ("".to_string(), "".to_string(), false, None)
+            }
+        };
+        self.conversion_result = Some(ConversionResult {
+            command: command_str,
+            stdout,
+            stderr,
+            ok,
+            json_file,
+        });
+    }
 }
 
 impl eframe::App for MyApp {
@@ -251,7 +363,7 @@ impl eframe::App for MyApp {
                     ui.separator();
                     ui.label("Standard Output:");
                     egui::ScrollArea::vertical()
-                        .id_source("conversion_stdout_scroll")
+                        .id_salt("conversion_stdout_scroll")
                         .max_height(100.0)
                         .show(ui, |ui| {
                             ui.monospace(&result.stdout);
@@ -259,7 +371,7 @@ impl eframe::App for MyApp {
                     ui.separator();
                     ui.label("Error Output:");
                     egui::ScrollArea::vertical()
-                        .id_source("conversion_stderr_scroll")
+                        .id_salt("conversion_stderr_scroll")
                         .max_height(100.0)
                         .show(ui, |ui| {
                             ui.monospace(&result.stderr);
@@ -292,7 +404,6 @@ impl eframe::App for MyApp {
                                                     );
                                                 }
                                             }
-                                            // ファイル名（拡張子なし）をセットする
                                             self.file_name = Some(
                                                 std::path::Path::new(json_path)
                                                     .file_stem()
@@ -315,6 +426,104 @@ impl eframe::App for MyApp {
                             }
                         }
                         self.conversion_result = None;
+                    }
+                });
+        }
+
+        // pending conversion script 選択ウィンドウ
+        if let (Some(file), Some(candidates)) = (
+            self.pending_import_file.clone(),
+            self.pending_script_candidates.clone(),
+        ) {
+            egui::Window::new("Select Conversion Script")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(
+                        "複数の変換スクリプトが設定されています。実行するものを選択してください:",
+                    );
+                    for script in candidates.iter() {
+                        if ui.button(&script.name).clicked() {
+                            self.execute_conversion(&file, script.clone());
+                            self.pending_import_file = None;
+                            self.pending_script_candidates = None;
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.pending_import_file = None;
+                        self.pending_script_candidates = None;
+                    }
+                });
+        }
+
+        // Settings ウィンドウ
+        if self.settings_open {
+            // 一時的に借用する
+            let settings_open = &mut self.settings_open;
+            let user_settings = &mut self.user_settings;
+            egui::Window::new("Settings")
+                .open(settings_open)
+                .show(ctx, |ui| {
+                    ui.label("Python3 Path:");
+                    ui.text_edit_singleline(&mut user_settings.python_path);
+                    ui.separator();
+                    ui.label("Conversion Scripts:");
+                    let mut remove_indices = Vec::new();
+                    for (i, script) in user_settings.conversion_scripts.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label("Name:");
+                            ui.text_edit_singleline(&mut script.name);
+                            ui.label("Script Path:");
+                            ui.text_edit_singleline(&mut script.script_path);
+                            ui.label("Extensions (comma separated):");
+                            let mut ext_str = script.extensions.join(", ");
+                            if ui.text_edit_singleline(&mut ext_str).changed() {
+                                script.extensions = ext_str
+                                    .split(',')
+                                    .map(|s| s.trim().to_lowercase())
+                                    .filter(|s| !s.is_empty())
+                                    .map(|s| {
+                                        if s.starts_with('.') {
+                                            s
+                                        } else {
+                                            format!(".{}", s)
+                                        }
+                                    })
+                                    .collect();
+                            }
+                            if ui.button("-").clicked() {
+                                remove_indices.push(i);
+                            }
+                        });
+                    }
+                    for &i in remove_indices.iter().rev() {
+                        user_settings.conversion_scripts.remove(i);
+                    }
+                    if ui.button("Add Script").clicked() {
+                        user_settings
+                            .conversion_scripts
+                            .push(ConversionScriptSetting {
+                                name: "New Script".to_string(),
+                                script_path: "".to_string(),
+                                extensions: vec![],
+                            });
+                    }
+                    let mut save_error: Option<String> = None;
+                    if ui.button("Save Settings").clicked() {
+                        match serde_json::to_string_pretty(&*user_settings) {
+                            Ok(content) => {
+                                if let Err(e) = fs::write("user_settings.json", content) {
+                                    save_error = Some(format!("Failed to save settings: {}", e));
+                                }
+                            }
+                            Err(e) => {
+                                save_error = Some(format!("Failed to serialize settings: {}", e));
+                            }
+                        }
+                    }
+                    if let Some(err) = save_error {
+                        self.error_dialog_message = Some(err);
                     }
                 });
         }
@@ -351,7 +560,6 @@ impl eframe::App for MyApp {
                                                     );
                                                 }
                                             }
-                                            // ファイル名（拡張子なし）をセットする
                                             self.file_name = Some(
                                                 std::path::Path::new(&path_str)
                                                     .file_stem()
@@ -381,46 +589,7 @@ impl eframe::App for MyApp {
                         ui.close_menu();
                         if let Some(path) = FileDialog::new().pick_file() {
                             let path_str = path.to_string_lossy().to_string();
-                            if !path_str.to_lowercase().ends_with(".json") {
-                                let command_str =
-                                    format!("python3 scripts/convert.py {}", path_str);
-                                let output = Command::new("python3")
-                                    .arg("scripts/convert.py")
-                                    .arg(&path_str)
-                                    .output();
-                                let (stdout, stderr, ok, json_file) = match output {
-                                    Ok(o) => {
-                                        let ok = o.status.success();
-                                        let stdout = String::from_utf8_lossy(&o.stdout).to_string();
-                                        let stderr = String::from_utf8_lossy(&o.stderr).to_string();
-                                        let json_file = if ok {
-                                            Some(
-                                                std::path::Path::new(&path_str)
-                                                    .with_extension("json")
-                                                    .to_string_lossy()
-                                                    .to_string(),
-                                            )
-                                        } else {
-                                            None
-                                        };
-                                        (stdout, stderr, ok, json_file)
-                                    }
-                                    Err(e) => {
-                                        self.show_error_dialog(&format!(
-                                            "Failed to execute the conversion script: {}",
-                                            e
-                                        ));
-                                        ("".to_string(), "".to_string(), false, None)
-                                    }
-                                };
-                                self.conversion_result = Some(ConversionResult {
-                                    command: command_str,
-                                    stdout,
-                                    stderr,
-                                    ok,
-                                    json_file,
-                                });
-                            } else {
+                            if path_str.to_lowercase().ends_with(".json") {
                                 match fs::read_to_string(&path_str) {
                                     Ok(data) => match serde_json::from_str::<DataFile>(&data) {
                                         Ok(data_file) => {
@@ -444,7 +613,6 @@ impl eframe::App for MyApp {
                                                     );
                                                 }
                                             }
-                                            // ファイル名（拡張子なし）をセットする
                                             self.file_name = Some(
                                                 std::path::Path::new(&path_str)
                                                     .file_stem()
@@ -464,6 +632,41 @@ impl eframe::App for MyApp {
                                         self.show_error_dialog(&format!("File read error: {}", e));
                                     }
                                 }
+                            } else {
+                                // 非 json ファイルの場合、ユーザー設定から拡張子に合致する変換スクリプトを選ぶ
+                                let ext = std::path::Path::new(&path_str)
+                                    .extension()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("")
+                                    .to_lowercase();
+                                let ext_with_dot = if !ext.is_empty() {
+                                    format!(".{}", ext)
+                                } else {
+                                    "".to_string()
+                                };
+                                let candidates: Vec<_> = self
+                                    .user_settings
+                                    .conversion_scripts
+                                    .iter()
+                                    .cloned()
+                                    .filter(|script| {
+                                        script
+                                            .extensions
+                                            .iter()
+                                            .any(|e| e.to_lowercase() == ext_with_dot)
+                                    })
+                                    .collect();
+                                if candidates.is_empty() {
+                                    self.show_error_dialog(&format!(
+                                        "拡張子 {} に対応する変換スクリプトが設定されていません。",
+                                        ext_with_dot
+                                    ));
+                                } else if candidates.len() == 1 {
+                                    self.execute_conversion(&path_str, candidates[0].clone());
+                                } else {
+                                    self.pending_import_file = Some(path_str);
+                                    self.pending_script_candidates = Some(candidates);
+                                }
                             }
                         }
                     }
@@ -472,6 +675,9 @@ impl eframe::App for MyApp {
                         std::process::exit(0);
                     }
                 });
+                if ui.button("Settings").clicked() {
+                    self.settings_open = true;
+                }
             });
         });
 
@@ -485,7 +691,6 @@ impl eframe::App for MyApp {
                         egui::CollapsingHeader::new(file_name)
                             .default_open(true)
                             .show(ui, |ui| {
-                                // ファイル全体の Toggle All
                                 let file_all_visible = self.signals.values().all(|sig| sig.visible);
                                 let mut file_toggle = file_all_visible;
                                 if ui.checkbox(&mut file_toggle, "Toggle All").changed() {
@@ -493,7 +698,6 @@ impl eframe::App for MyApp {
                                         sig.visible = file_toggle;
                                     }
                                 }
-                                // ファイル内の各グループ
                                 let mut group_keys: Vec<String> =
                                     self.groups.keys().cloned().collect();
                                 group_keys.sort();
@@ -539,7 +743,6 @@ impl eframe::App for MyApp {
                 });
             });
 
-        // 可視シグナルのみの offset 再計算
         {
             let mut group_keys: Vec<String> = self.groups.keys().cloned().collect();
             group_keys.sort();
@@ -571,7 +774,6 @@ impl eframe::App for MyApp {
             }
         }
 
-        // 中央パネル：波形描画とログ表示
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("My Rust EGUI App - Single-Step ON/OFF Waveform");
             egui::ScrollArea::vertical()
@@ -624,7 +826,7 @@ impl eframe::App for MyApp {
                             for signal_name in &group.signals {
                                 if let Some(signal_data) = self.signals.get(signal_name) {
                                     if signal_data.visible {
-                                        let wave_line = build_digital_wave(
+                                        let wave_line = Self::build_digital_wave(
                                             &signal_data.on_intervals,
                                             self.min_time,
                                             self.max_time,
@@ -647,26 +849,6 @@ impl eframe::App for MyApp {
                 });
         });
     }
-}
-
-/// 指定の on_intervals からデジタル波形を生成する
-fn build_digital_wave(on_intervals: &Vec<Interval>, min_t: f64, max_t: f64, offset: f64) -> Line {
-    let mut points = Vec::new();
-    let mut current_x = min_t;
-    points.push([current_x, offset]);
-    for iv in on_intervals {
-        if iv.start > current_x {
-            points.push([iv.start, offset]);
-        }
-        points.push([iv.start, offset + 1.0]);
-        points.push([iv.end, offset + 1.0]);
-        points.push([iv.end, offset]);
-        current_x = iv.end;
-    }
-    if current_x < max_t {
-        points.push([max_t, offset]);
-    }
-    Line::new(PlotPoints::from(points))
 }
 
 /// ISO8601 のタイムスタンプ文字列を f64 (Unix epoch 秒) に変換する
