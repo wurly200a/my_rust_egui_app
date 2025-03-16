@@ -685,7 +685,7 @@ impl eframe::App for MyApp {
         egui::SidePanel::left("group_panel")
             .resizable(true)
             .show(ctx, |ui| {
-                ui.heading("Groups");
+                //ui.heading("Signals");
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     if let Some(ref file_name) = self.file_name {
                         egui::CollapsingHeader::new(file_name)
@@ -775,7 +775,7 @@ impl eframe::App for MyApp {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Log Analyzer");
+            //ui.heading("Log Analyzer");
             egui::ScrollArea::vertical()
                 .max_height(150.0)
                 .show(ui, |ui| {
@@ -791,7 +791,7 @@ impl eframe::App for MyApp {
                     }
                 });
             ui.separator();
-            ui.label("Timeline (Digital Waveform)");
+            //ui.label("Timeline (Digital Waveform)");
             let legend = Legend::default();
             let offset_to_name = self.offset_to_name.clone();
             egui_plot::Plot::new("digital_wave_plot")
