@@ -58,7 +58,7 @@ struct SignalData {
     color: Color32,     // 固定の色
 }
 
-/// 信号グループ
+/// 信号グループ（例: group1, group2 ）
 struct GroupData {
     name: String,
     signals: Vec<String>,
@@ -74,7 +74,7 @@ struct ConversionResult {
     json_file: Option<String>,
 }
 
-/// メインアプリケーション
+/// メインアプリケーション。ここでは、ファイル名（例: file_a）を最上位グループとして保持します。
 struct MyApp {
     logs: Vec<LogEntry>,
     signals: HashMap<String, SignalData>,
@@ -86,6 +86,8 @@ struct MyApp {
     error_dialog_message: Option<String>,
     // 各シグナルの初期表示状態：キーは (group, name) の組み合わせ
     visibility_defaults: HashMap<(String, String), bool>,
+    // ファイル名（拡張子なし）を保持し、ファイル単位のグループとして利用する
+    file_name: Option<String>,
 }
 
 impl MyApp {
@@ -100,6 +102,7 @@ impl MyApp {
             conversion_result: None,
             error_dialog_message: None,
             visibility_defaults: HashMap::new(),
+            file_name: None,
         }
     }
 
@@ -287,6 +290,14 @@ impl eframe::App for MyApp {
                                                     );
                                                 }
                                             }
+                                            // ファイル名（拡張子なし）をセットする
+                                            self.file_name = Some(
+                                                std::path::Path::new(json_path)
+                                                    .file_stem()
+                                                    .unwrap()
+                                                    .to_string_lossy()
+                                                    .to_string(),
+                                            );
                                             self.recalc();
                                         }
                                         Err(_) => {
@@ -338,6 +349,14 @@ impl eframe::App for MyApp {
                                                     );
                                                 }
                                             }
+                                            // ファイル名（拡張子なし）をセットする
+                                            self.file_name = Some(
+                                                std::path::Path::new(&path_str)
+                                                    .file_stem()
+                                                    .unwrap()
+                                                    .to_string_lossy()
+                                                    .to_string(),
+                                            );
                                             self.recalc();
                                         }
                                         Err(_) => {
@@ -367,7 +386,6 @@ impl eframe::App for MyApp {
                                     .arg("scripts/convert.py")
                                     .arg(&path_str)
                                     .output();
-
                                 let (stdout, stderr, ok, json_file) = match output {
                                     Ok(o) => {
                                         let ok = o.status.success();
@@ -393,7 +411,6 @@ impl eframe::App for MyApp {
                                         ("".to_string(), "".to_string(), false, None)
                                     }
                                 };
-
                                 self.conversion_result = Some(ConversionResult {
                                     command: command_str,
                                     stdout,
@@ -425,6 +442,14 @@ impl eframe::App for MyApp {
                                                     );
                                                 }
                                             }
+                                            // ファイル名（拡張子なし）をセットする
+                                            self.file_name = Some(
+                                                std::path::Path::new(&path_str)
+                                                    .file_stem()
+                                                    .unwrap()
+                                                    .to_string_lossy()
+                                                    .to_string(),
+                                            );
                                             self.recalc();
                                         }
                                         Err(_) => {
@@ -448,63 +473,86 @@ impl eframe::App for MyApp {
             });
         });
 
-        // 左側パネル：グループ／信号チェックボックス
+        // 左側パネル：ファイルグループ→各グループ→シグナルのネスト表示
         egui::SidePanel::left("group_panel")
             .resizable(true)
             .show(ctx, |ui| {
                 ui.heading("Groups");
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    let mut group_keys: Vec<String> = self.groups.keys().cloned().collect();
-                    group_keys.sort();
-
-                    for group_key in group_keys {
-                        let group = self.groups.get_mut(&group_key).unwrap();
-                        let group_all_visible =
-                            group.signals.iter().all(|s| self.signals[s].visible);
-                        egui::CollapsingHeader::new(&group.name)
-                            .default_open(false)
+                    if let Some(ref file_name) = self.file_name {
+                        egui::CollapsingHeader::new(file_name)
+                            .default_open(true)
                             .show(ui, |ui| {
-                                let mut group_check = group_all_visible;
-                                if ui.checkbox(&mut group_check, "Toggle All").changed() {
-                                    for s in &group.signals {
-                                        if let Some(sig) = self.signals.get_mut(s) {
-                                            sig.visible = group_check;
-                                        }
+                                // ファイル全体の Toggle All
+                                let file_all_visible = self.signals.values().all(|sig| sig.visible);
+                                let mut file_toggle = file_all_visible;
+                                if ui.checkbox(&mut file_toggle, "Toggle All").changed() {
+                                    for sig in self.signals.values_mut() {
+                                        sig.visible = file_toggle;
                                     }
                                 }
-                                ui.indent("group_signals", |ui| {
-                                    for s in &group.signals {
-                                        if let Some(sig) = self.signals.get_mut(s) {
-                                            let mut check = sig.visible;
-                                            if ui.checkbox(&mut check, &sig.name).changed() {
-                                                sig.visible = check;
-                                            }
-                                        }
+                                // ファイル内の各グループ
+                                let mut group_keys: Vec<String> =
+                                    self.groups.keys().cloned().collect();
+                                group_keys.sort();
+                                for group_key in group_keys {
+                                    if let Some(group) = self.groups.get(&group_key) {
+                                        let group_all_visible =
+                                            group.signals.iter().all(|s| self.signals[s].visible);
+                                        egui::CollapsingHeader::new(&group.name)
+                                            .default_open(false)
+                                            .show(ui, |ui| {
+                                                let mut group_toggle = group_all_visible;
+                                                if ui
+                                                    .checkbox(&mut group_toggle, "Toggle All")
+                                                    .changed()
+                                                {
+                                                    for s in &group.signals {
+                                                        if let Some(sig) = self.signals.get_mut(s) {
+                                                            sig.visible = group_toggle;
+                                                        }
+                                                    }
+                                                }
+                                                ui.indent("group_signals", |ui| {
+                                                    for s in &group.signals {
+                                                        if let Some(sig) = self.signals.get_mut(s) {
+                                                            let mut check = sig.visible;
+                                                            if ui
+                                                                .checkbox(&mut check, &sig.name)
+                                                                .changed()
+                                                            {
+                                                                sig.visible = check;
+                                                            }
+                                                        }
+                                                    }
+                                                });
+                                            });
+                                        ui.separator();
                                     }
-                                });
+                                }
                             });
-                        ui.separator();
+                    } else {
+                        ui.label("No file loaded.");
                     }
                 });
             });
 
-        // 可視信号のみの offset 再計算
+        // 可視シグナルのみの offset 再計算
         {
             let mut group_keys: Vec<String> = self.groups.keys().cloned().collect();
             group_keys.sort();
-
             let mut visible_signals_in_order = Vec::new();
             for group_key in group_keys {
-                let group = &self.groups[&group_key];
-                for s in &group.signals {
-                    if let Some(sig) = self.signals.get(s) {
-                        if sig.visible {
-                            visible_signals_in_order.push(s.clone());
+                if let Some(group) = self.groups.get(&group_key) {
+                    for s in &group.signals {
+                        if let Some(sig) = self.signals.get(s) {
+                            if sig.visible {
+                                visible_signals_in_order.push(s.clone());
+                            }
                         }
                     }
                 }
             }
-
             let total_visible = visible_signals_in_order.len();
             for (i, s) in visible_signals_in_order.iter().enumerate() {
                 let offset = ((total_visible - i) * 2 - 1) as f64;
@@ -512,7 +560,6 @@ impl eframe::App for MyApp {
                     sig.y_offset = offset;
                 }
             }
-
             self.offset_to_name.clear();
             for (name, sig) in self.signals.iter() {
                 if sig.visible {
@@ -525,7 +572,6 @@ impl eframe::App for MyApp {
         // 中央パネル：波形描画とログ表示
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("My Rust EGUI App - Single-Step ON/OFF Waveform");
-
             egui::ScrollArea::vertical()
                 .max_height(150.0)
                 .show(ui, |ui| {
@@ -540,13 +586,10 @@ impl eframe::App for MyApp {
                         ));
                     }
                 });
-
             ui.separator();
             ui.label("Timeline (Digital Waveform)");
-
             let legend = Legend::default();
             let offset_to_name = self.offset_to_name.clone();
-
             egui_plot::Plot::new("digital_wave_plot")
                 .min_size(ui.available_size())
                 .include_x(self.min_time)
@@ -573,28 +616,28 @@ impl eframe::App for MyApp {
                 .show(ui, |plot_ui: &mut PlotUi| {
                     let mut group_keys: Vec<String> = self.groups.keys().cloned().collect();
                     group_keys.sort();
-
                     let mut draw_index = 0;
                     for group_key in group_keys {
-                        let group = &self.groups[&group_key];
-                        for signal_name in &group.signals {
-                            if let Some(signal_data) = self.signals.get(signal_name) {
-                                if signal_data.visible {
-                                    let wave_line = build_digital_wave(
-                                        &signal_data.on_intervals,
-                                        self.min_time,
-                                        self.max_time,
-                                        signal_data.y_offset,
-                                    );
-                                    let legend_label =
-                                        format!("{:02}: {}", draw_index, signal_data.name);
-                                    plot_ui.line(
-                                        wave_line
-                                            .color(signal_data.color)
-                                            .width(2.0)
-                                            .name(legend_label),
-                                    );
-                                    draw_index += 1;
+                        if let Some(group) = self.groups.get(&group_key) {
+                            for signal_name in &group.signals {
+                                if let Some(signal_data) = self.signals.get(signal_name) {
+                                    if signal_data.visible {
+                                        let wave_line = build_digital_wave(
+                                            &signal_data.on_intervals,
+                                            self.min_time,
+                                            self.max_time,
+                                            signal_data.y_offset,
+                                        );
+                                        let legend_label =
+                                            format!("{:02}: {}", draw_index, signal_data.name);
+                                        plot_ui.line(
+                                            wave_line
+                                                .color(signal_data.color)
+                                                .width(2.0)
+                                                .name(legend_label),
+                                        );
+                                        draw_index += 1;
+                                    }
                                 }
                             }
                         }
@@ -608,9 +651,7 @@ impl eframe::App for MyApp {
 fn build_digital_wave(on_intervals: &Vec<Interval>, min_t: f64, max_t: f64, offset: f64) -> Line {
     let mut points = Vec::new();
     let mut current_x = min_t;
-
     points.push([current_x, offset]);
-
     for iv in on_intervals {
         if iv.start > current_x {
             points.push([iv.start, offset]);
@@ -620,11 +661,9 @@ fn build_digital_wave(on_intervals: &Vec<Interval>, min_t: f64, max_t: f64, offs
         points.push([iv.end, offset]);
         current_x = iv.end;
     }
-
     if current_x < max_t {
         points.push([max_t, offset]);
     }
-
     Line::new(PlotPoints::from(points))
 }
 
@@ -645,7 +684,6 @@ fn parse_timestamp_to_f64(ts: &str) -> f64 {
 fn update_signal_data(signals: &mut HashMap<String, SignalData>, log: &LogEntry) {
     let signal_name = &log.name;
     let time = log.timestamp_num;
-
     match log.kind.as_str() {
         "ONOFF" => {
             if let Some(val) = log.value.as_str() {
@@ -696,7 +734,6 @@ fn merge_on_intervals(sig: &mut SignalData) {
     sig.on_intervals
         .sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
     let mut merged: Vec<Interval> = Vec::new();
-
     for iv in &sig.on_intervals {
         if let Some(last_iv) = merged.last_mut() {
             if iv.start <= last_iv.end {
