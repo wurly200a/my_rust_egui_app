@@ -2,6 +2,7 @@
 name = "my_rust_egui_app"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
 
 [dependencies]
 eframe = "0.31"
@@ -16,3 +17,6 @@ rfd = "0.8"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "windef"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"
