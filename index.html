@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <title>My egui App</title>
+  </head>
+  <body>
+    <!-- eframe::start_web で指定した canvas の id と一致させる -->
+    <canvas id="the_canvas_id"></canvas>
+    <script type="module">
+      import init from "./my_rust_egui_app.js";
+      init();
+    </script>
+  </body>
+</html>

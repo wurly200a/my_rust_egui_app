@@ -5,6 +5,7 @@ use eframe;
 use egui;
 use egui::Color32;
 use egui_plot::{Legend, Line, PlotPoints, PlotUi};
+#[cfg(not(target_arch = "wasm32"))]
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
 use serde_json;
@@ -866,6 +867,18 @@ impl eframe::App for MyApp {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    use eframe::WebOptions;
+    eframe::start_web(
+        "the_canvas_id",
+        WebOptions::default(),
+        Box::new(|_cc| Box::new(MyApp::new())),
+    )
+    .expect("failed to start eframe on the web");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = MyApp::new();
     let native_options = eframe::NativeOptions::default();

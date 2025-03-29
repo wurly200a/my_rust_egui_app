@@ -1,3 +1,6 @@
+[net]
+git-fetch-with-cli = true
+
 [package]
 name = "my_rust_egui_app"
 version = "0.1.0"
@@ -20,3 +23,7 @@ winapi = { version = "0.3", features = ["winuser", "windef"] }
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/main.rs"
